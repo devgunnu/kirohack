@@ -1,1 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MeshRun Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+    <header>
+        <h1>MeshRun</h1>
+        <div class="connection-status">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-text">Connecting...</span>
+        </div>
+    </header>
 
+    <main class="dashboard-grid">
+        <!-- Panel 1: Node Graph -->
+        <section class="panel panel-graph">
+            <h2>Node Graph</h2>
+            <div id="node-graph"></div>
+        </section>
+
+        <!-- Panel 2: Live Request Feed -->
+        <section class="panel panel-feed">
+            <h2>Live Request Feed</h2>
+            <div class="feed-container" id="feed-container">
+                <table id="feed-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Event</th>
+                            <th>Job ID</th>
+                            <th>Detail</th>
+                        </tr>
+                    </thead>
+                    <tbody id="feed-body">
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Panel 3: Economics Counter -->
+        <section class="panel panel-economics">
+            <h2>Economics</h2>
+            <div class="economics-grid">
+                <div class="stat-card">
+                    <div class="stat-value" id="total-tokens">0</div>
+                    <div class="stat-label">Total Tokens Processed</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="cost-saved">$0.00</div>
+                    <div class="stat-label">API Cost Avoided</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="co2-avoided">0.0000g</div>
+                    <div class="stat-label">CO2 Avoided</div>
+                </div>
+            </div>
+            <p class="economics-subtitle">Every job routed through MeshRun instead of a cloud API</p>
+        </section>
+    </main>
+
+    <script src="/static/main.js"></script>
+</body>
+</html>
