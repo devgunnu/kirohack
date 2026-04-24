@@ -900,9 +900,19 @@ The dashboard websocket currently uses mock events from `app/dashboard/events.py
 | status | `app/cli/commands/status.py` | ✅ Implemented (mock backend) |
 | nodes | `app/cli/commands/nodes.py` | ✅ Implemented (mock backend) |
 | credits | `app/cli/commands/credits.py` | ✅ Implemented (mock backend) |
-| join | `app/cli/commands/join.py` | 🔄 In progress |
-| leave | `app/cli/commands/leave.py` | 🔄 In progress |
-| dashboard | `app/cli/commands/dashboard.py` | 🔄 In progress |
+| join | `app/cli/commands/join.py` | ✅ Implemented (mock backend) |
+| leave | `app/cli/commands/leave.py` | ✅ Implemented (mock backend) |
+| dashboard | `app/cli/commands/dashboard.py` | ✅ Implemented (mock events) |
+
+### Dashboard Implementation Status
+
+| Component | File | Status |
+|-----------|------|--------|
+| Event stream | `app/dashboard/events.py` | ✅ Mock event generator |
+| FastAPI server | `app/dashboard/server.py` | ✅ WebSocket + static files |
+| HTML | `app/dashboard/static/index.html` | ✅ Complete |
+| CSS | `app/dashboard/static/style.css` | ✅ Dark theme |
+| JavaScript | `app/dashboard/static/main.js` | ✅ D3 graph + live feed |
 
 ### Dependencies
 
