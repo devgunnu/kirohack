@@ -931,3 +931,47 @@ meshrun submit "hello world"
 # Launch dashboard
 meshrun dashboard
 ```
+
+
+---
+
+## Kiro Extension
+
+### What is built
+A Kiro/VS Code extension in meshrun/kiro-extension/ that surfaces the MeshRun CLI and dashboard natively inside Kiro IDE.
+
+### Features
+- Activity bar icon with two sidebar tree views:
+  - Nodes: shows each worker node with status, layer range, latency, credits
+  - Credits: shows balance, GPU hours contributed, priority score, cost saved, CO2 avoided
+- Refresh button on nodes sidebar
+- Status bar item bottom-left: "MeshRun" — click opens dashboard
+- Command Palette (Cmd+Shift+P → "MeshRun:"):
+  - MeshRun: Submit Inference Job — input box prompt, QuickPick sync/async
+  - MeshRun: Show Network Status
+  - MeshRun: List Nodes
+  - MeshRun: Show Credits
+  - MeshRun: Join Mesh as Worker — confirmation dialog
+  - MeshRun: Leave Mesh — confirmation dialog
+  - MeshRun: Open Dashboard — D3 dashboard as Kiro webview tab
+
+### Architecture
+- src/extension.ts       — activation entry point
+- src/commands.ts        — all command registrations
+- src/meshrunProcess.ts  — child_process.spawn wrapper, streams to Output Channel
+- src/dashboard.ts       — WebviewPanel iframing the FastAPI server
+- src/sidebar.ts         — TreeDataProviders for nodes and credits
+
+### How it works
+All commands call the existing meshrun CLI via child_process.spawn. Output streams to the MeshRun Output Channel in real time. Dashboard opens as a Kiro webview tab, iframing http://127.0.0.1:7654. FastAPI server is started automatically when dashboard command is triggered.
+
+### Integration notes
+Sidebar mock data in sidebar.ts — TODO replace with coordinator HTTP call. meshrunProcess.ts can be updated to call coordinator directly instead of CLI. The extension works in both Kiro and standard VS Code since Kiro is VS Code based.
+
+### To run in development
+```bash
+cd meshrun/kiro-extension
+npm install
+npm run compile
+```
+Then press F5 in Kiro/VS Code to launch Extension Development Host.
