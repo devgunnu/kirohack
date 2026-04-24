@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "meshrun"
 version = "0.1.0"
+description = "Distributed AI inference on compute you already own."
 requires-python = ">=3.11"
 dependencies = [
     "typer[all]>=0.12.0",
-    "rich>=13.0.0,<14.0.0",
+    "rich>=14.0.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
     "websockets>=12.0",
@@ -19,8 +20,8 @@ dependencies = [
 ]
 
 [project.scripts]
-meshrun = "meshrun.cli.main:app"
+meshrun = "app.cli.main:app"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["meshrun*"]
+include = ["app*"]
