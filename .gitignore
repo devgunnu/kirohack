@@ -43,3 +43,6 @@ config.local.toml
 # Logs
 *.log
 logs/
+
+.*_cache
+*.py[cod]
