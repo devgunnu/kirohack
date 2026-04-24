@@ -818,3 +818,106 @@ The data plane uses a custom binary protocol optimized for minimal overhead. No 
 | Threading / async runtime                        | Concurrent request handling                               | Worker Nodes              |
 | Priority queue (stdlib)                          | Request scheduling                                        | Coordinator               |
 | UUID generator (stdlib)                          | Node and request identification                           | All components            |
+
+
+---
+
+## App Layer (CLI + Dashboard)
+
+This section documents the user-facing application layer built on top of the distributed inference system. The app layer provides the CLI tool and web dashboard that end users interact with.
+
+### What is Built
+
+The `meshrun/app/` folder contains the complete CLI and dashboard for MeshRun.
+
+**CLI tool**: `meshrun` (installed via `pip install -e meshrun/app/`)
+
+**Commands**:
+- `meshrun submit "<prompt>"` — runs inference, streams output token by token
+- `meshrun submit "<prompt>" --async` — queues job, returns job ID
+- `meshrun submit --job-id <id>` — retrieves async job result
+- `meshrun status` — shows network health and queue
+- `meshrun nodes` — lists all nodes with status, layers, credits, latency
+- `meshrun credits` — shows credit balance, priority score, history
+- `meshrun join` — interactive onboarding to register this machine as a worker
+- `meshrun leave` — gracefully deregisters this machine
+- `meshrun dashboard` — launches web dashboard at http://127.0.0.1:7654
+
+**Dashboard**: FastAPI server + D3.js frontend
+- WebSocket endpoint: `ws://127.0.0.1:7654/ws`
+- Expects events from coordinator in this format (see `app/dashboard/events.py` for full schema):
+  - `{ type: "job_started", job_id, prompt_preview, route, timestamp }`
+  - `{ type: "job_hop", job_id, from_node, to_node, latency_ms, timestamp }`
+  - `{ type: "job_complete", job_id, tokens, total_latency, cost_saved_usd, co2_avoided_g, timestamp }`
+  - `{ type: "node_status", node_id, status, latency_ms, timestamp }`
+  - `{ type: "queue_update", depth, timestamp }`
+  - `{ type: "stats_update", total_tokens, total_cost_saved_usd, total_co2_avoided_g, timestamp }`
+
+### App Layer Architecture
+
+```mermaid
+graph TD
+    User["User"]
+    CLI["CLI (Typer)"]
+    Dashboard["Dashboard (FastAPI)"]
+    InferenceClient["Inference Client<br/>(app/client/inference.py)"]
+    Coordinator["Coordinator<br/>(Control Plane)"]
+    
+    User --> CLI
+    User --> Dashboard
+    CLI --> InferenceClient
+    Dashboard --> InferenceClient
+    InferenceClient --> Coordinator
+    
+    Dashboard -. "WebSocket events" .-> User
+```
+
+### Integration Points (Stubs to Replace)
+
+All backend calls live in `app/client/inference.py`. Every function is marked `# TODO: replace with real coordinator call`.
+
+| Function | Purpose | Coordinator Endpoint |
+|----------|---------|---------------------|
+| `get_routing_path(prompt)` | Get execution path for a prompt | `RequestRoute` |
+| `submit_inference_job(prompt, priority)` | Synchronous inference | `RequestRoute` + data plane |
+| `submit_async_job(prompt, priority)` | Queue job for async processing | Priority Queue enqueue |
+| `get_job_result(job_id)` | Retrieve async job result | Job status lookup |
+| `register_node(node_id, layers, vram_gb)` | Register as worker | `Register` RPC |
+| `deregister_node(node_id)` | Leave the mesh | `Deregister` RPC |
+| `get_network_status()` | Fetch nodes and queue | Registry + Queue status |
+| `get_credits(node_id)` | Fetch credit balance | Credit ledger |
+| `detect_local_hardware()` | Detect GPU/RAM | Local (torch/psutil) |
+
+The coordinator URL is configured via `app/config.py` (default: `http://localhost:8000`).
+
+The dashboard websocket currently uses mock events from `app/dashboard/events.py`. Replace `mock_event_stream()` with a real websocket subscription to the coordinator.
+
+### CLI Implementation Status
+
+| Command | File | Status |
+|---------|------|--------|
+| submit | `app/cli/commands/submit.py` | ✅ Implemented (mock backend) |
+| status | `app/cli/commands/status.py` | ✅ Implemented (mock backend) |
+| nodes | `app/cli/commands/nodes.py` | ✅ Implemented (mock backend) |
+| credits | `app/cli/commands/credits.py` | ✅ Implemented (mock backend) |
+| join | `app/cli/commands/join.py` | 🔄 In progress |
+| leave | `app/cli/commands/leave.py` | 🔄 In progress |
+| dashboard | `app/cli/commands/dashboard.py` | 🔄 In progress |
+
+### Dependencies
+
+```
+pip install -e meshrun/app/
+```
+
+Requires: typer, rich, fastapi, uvicorn, websockets, httpx, pydantic, pydantic-settings
+
+### Running Locally
+
+```bash
+# Run inference
+meshrun submit "hello world"
+
+# Launch dashboard
+meshrun dashboard
+```
