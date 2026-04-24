@@ -1,0 +1,90 @@
+{
+  "name": "meshrun-kiro",
+  "displayName": "MeshRun",
+  "description": "Distributed AI inference on compute you already own. Built for Kiro.",
+  "version": "0.1.0",
+  "publisher": "meshrun",
+  "keywords": ["meshrun", "kiro", "distributed-ai", "inference", "mesh"],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "meshrun.submit",
+        "title": "MeshRun: Submit Inference Job"
+      },
+      {
+        "command": "meshrun.status",
+        "title": "MeshRun: Show Network Status"
+      },
+      {
+        "command": "meshrun.nodes",
+        "title": "MeshRun: List Nodes"
+      },
+      {
+        "command": "meshrun.credits",
+        "title": "MeshRun: Show Credits"
+      },
+      {
+        "command": "meshrun.join",
+        "title": "MeshRun: Join Mesh as Worker"
+      },
+      {
+        "command": "meshrun.leave",
+        "title": "MeshRun: Leave Mesh"
+      },
+      {
+        "command": "meshrun.dashboard",
+        "title": "MeshRun: Open Dashboard"
+      },
+      {
+        "command": "meshrun.refreshSidebar",
+        "title": "MeshRun: Refresh Sidebar",
+        "icon": "$(refresh)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "meshrun-sidebar",
+          "title": "MeshRun",
+          "icon": "$(server)"
+        }
+      ]
+    },
+    "views": {
+      "meshrun-sidebar": [
+        {
+          "id": "meshrunNodes",
+          "name": "Nodes"
+        },
+        {
+          "id": "meshrunCredits",
+          "name": "Credits"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "meshrun.refreshSidebar",
+          "when": "view == meshrunNodes",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}
