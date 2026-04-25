@@ -22,6 +22,9 @@ def submit(
     async_mode: bool = typer.Option(False, "--async", "-a", help="Submit job async and return a job ID immediately."),
     job_id: Optional[str] = typer.Option(None, "--job-id", "-j", help="Retrieve result of a previously submitted async job."),
 ):
+    from app.state import require_joined
+    require_joined()
+
     # Retrieve existing async job
     if job_id:
         with spinner_routing():

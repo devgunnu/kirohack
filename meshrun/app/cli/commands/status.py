@@ -12,6 +12,9 @@ app = typer.Typer(help="Show network and queue status.")
 
 @app.callback(invoke_without_command=True)
 def status():
+    from app.state import require_joined
+    require_joined()
+
     with spinner_connecting():
         data = get_network_status()
     print_success("Connected to coordinator.")
