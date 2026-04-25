@@ -120,7 +120,7 @@ Sends periodic heartbeat RPCs to the Coordinator with Resource Monitor snapshots
 
 Source: `meshrun/worker/serving.py`
 
-Handles the request processing pipeline: accepts TCP connections, reads Forward messages, runs the Layer Engine, and sends results downstream.
+Handles the encrypted request processing pipeline: accepts TCP connections, reads encrypted Forward messages, runs the Layer Engine, and sends encrypted results downstream.
 
 ### Key Classes
 
@@ -128,24 +128,26 @@ Handles the request processing pipeline: accepts TCP connections, reads Forward 
 - `ServingStats` — Tracks success/failure counts for processed requests
 - `ServingLoop` — Main serving loop that accepts connections and processes requests
 
-### Request Processing Pipeline
+### Request Processing Pipeline (Encrypted)
 
 For each incoming TCP connection:
 
-1. `read_message(sock)` — Read header + tensor payload from upstream
+1. `read_message_secure(sock, session_key)` — Read and decrypt header + tensor payload from upstream
 2. Validate message type is FORWARD
 3. Convert flat tensor list to PyTorch tensor
 4. `forward(engine, tensor, step_id)` — Run Layer Engine forward pass
 5. Build response header (RESULT if final node, FORWARD otherwise)
 6. Convert output tensor to flat list
-7. `write_message(downstream_sock, header, data)` — Send to downstream node or back to client
+7. `write_message_secure(downstream_sock, header, data, session_key)` — Encrypt and send to downstream node or back to client
+
+All data plane reads/writes use the AES-256-GCM secure variants with the session key distributed by the Coordinator during layer assignment.
 
 ### Failure Handling
 
 - If downstream send fails, reports failure to Coordinator via `ReportFailure` RPC
 - Receives `RerouteInfo` with backup node address
-- Retries send to backup node (single retry)
-- If backup also fails, sends ERROR message back upstream
+- Retries encrypted send to backup node (single retry)
+- If backup also fails, sends encrypted ERROR message back upstream
 
 ### Usage
 
@@ -164,10 +166,11 @@ loop = ServingLoop(
     layer_registry=registry,
     resource_monitor=monitor,
     coordinator_client=client,
+    session_key=session_key,  # 32-byte AES-256 key from Coordinator
 )
 
 loop.start()
-# ... serving requests ...
+# ... serving encrypted requests ...
 loop.stop()
 ```
 
