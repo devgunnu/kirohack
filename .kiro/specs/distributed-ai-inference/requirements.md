@@ -78,14 +78,18 @@ The Connection Pool MUST accept inbound TCP connections from upstream nodes and 
 
 ## Requirement 3: Shard Manager
 
-### 3.1 Shard Loading
-The Shard Manager MUST load quantized model shards (fp16 or int8) for the assigned layer range.
+### 3.1 Shard Loading (Safetensors Selective Download)
+The Shard Manager MUST selectively download and load only the assigned layer weights from a safetensors model file using HTTP Range requests, then move them to GPU memory.
 
 **Acceptance Criteria:**
-- LoadShard accepts model_id, layer_start, layer_end, and dtype parameters
-- Weights are loaded from disk or network and moved to GPU memory
+- LoadShard accepts model_id, model_url (HTTP URL to safetensors file), layer_start, layer_end, and dtype parameters
+- The safetensors file header is fetched via HTTP Range request to discover tensor names, shapes, dtypes, and byte offsets — without downloading the full file
+- Only tensors belonging to the assigned layer range (e.g., `model.layers.5.*` through `model.layers.9.*`) are downloaded via targeted HTTP Range requests
+- Downloaded weights are cached locally so subsequent startups skip the download
+- Cached weights are loaded from disk and moved to GPU memory
 - After loading, the shard's memory footprint is reported to the Resource Monitor
-- Load status transitions: UNLOADED → LOADING → READY (or ERROR on failure)
+- Load status transitions: UNLOADED → DOWNLOADING → LOADING → READY (or ERROR on failure)
+- The approach is provider-agnostic: works with any HTTP server supporting Range requests (HuggingFace Hub, S3, GCS, self-hosted)
 
 ### 3.2 Shard Validation
 The Shard Manager MUST validate that a loaded shard matches the expected configuration.
@@ -162,7 +166,7 @@ The Resource Monitor MUST alert when actual GPU usage exceeds the user-configure
 The Layer Assignment Registry MUST store the current layer assignment for the node.
 
 **Acceptance Criteria:**
-- Stores: node_id, model_id, layer_start, layer_end, dtype, is_final_node, downstream_node address, upstream_nodes addresses
+- Stores: node_id, model_id, model_url (HTTP URL to safetensors file), layer_start, layer_end, dtype, is_final_node, downstream_node address, upstream_nodes addresses
 - Assignment is set when AcceptLayerAssignment is received from the Coordinator
 - Assignment can be queried by other sub-components (Message Handler, Layer Engine)
 
