@@ -1,12 +1,30 @@
 import * as vscode from 'vscode';
 import { runMeshrun, promptInput } from './meshrunProcess';
 import { MeshRunDashboardPanel } from './dashboard';
+import { isJoined, OnboardingPanel } from './onboarding';
 
 export function registerCommands(context: vscode.ExtensionContext): void {
+
+    function requireJoined(): boolean {
+        if (!isJoined()) {
+            vscode.window.showWarningMessage(
+                'MeshRun: You need to join the mesh first.',
+                'Join Now'
+            ).then(selection => {
+                if (selection === 'Join Now') {
+                    OnboardingPanel.createOrShow(context);
+                }
+            });
+            return false;
+        }
+        return true;
+    }
 
     // Submit inference job
     context.subscriptions.push(
         vscode.commands.registerCommand('meshrun.submit', async () => {
+            if (!requireJoined()) { return; }
+
             const prompt = await promptInput(
                 'Enter your inference prompt',
                 'e.g. explain what a transformer is'
@@ -20,8 +38,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
             if (!mode) { return; }
 
             const args = mode.startsWith('Async')
-                ? ['submit', prompt, '--async']
-                : ['submit', prompt];
+                ? ['submit', `"${prompt}"`, '--async']
+                : ['submit', `"${prompt}"`];
 
             try {
                 await runMeshrun(args);
@@ -34,6 +52,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     // Status
     context.subscriptions.push(
         vscode.commands.registerCommand('meshrun.status', async () => {
+            if (!requireJoined()) { return; }
             try {
                 await runMeshrun(['status']);
             } catch (e: any) {
@@ -45,6 +64,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     // Nodes
     context.subscriptions.push(
         vscode.commands.registerCommand('meshrun.nodes', async () => {
+            if (!requireJoined()) { return; }
             try {
                 await runMeshrun(['nodes']);
             } catch (e: any) {
@@ -56,6 +76,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     // Credits
     context.subscriptions.push(
         vscode.commands.registerCommand('meshrun.credits', async () => {
+            if (!requireJoined()) { return; }
             try {
                 await runMeshrun(['credits']);
             } catch (e: any) {
@@ -64,26 +85,17 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         })
     );
 
-    // Join
+    // Join — opens onboarding webview
     context.subscriptions.push(
-        vscode.commands.registerCommand('meshrun.join', async () => {
-            const confirmed = await vscode.window.showWarningMessage(
-                'Register this machine as a MeshRun worker node?',
-                'Yes, Join',
-                'Cancel'
-            );
-            if (confirmed !== 'Yes, Join') { return; }
-            try {
-                await runMeshrun(['join']);
-            } catch (e: any) {
-                vscode.window.showErrorMessage(`MeshRun: ${e.message}`);
-            }
+        vscode.commands.registerCommand('meshrun.join', () => {
+            OnboardingPanel.createOrShow(context);
         })
     );
 
     // Leave
     context.subscriptions.push(
         vscode.commands.registerCommand('meshrun.leave', async () => {
+            if (!requireJoined()) { return; }
             const confirmed = await vscode.window.showWarningMessage(
                 'Deregister this machine from the MeshRun mesh?',
                 'Yes, Leave',

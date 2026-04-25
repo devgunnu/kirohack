@@ -14,7 +14,7 @@ export function runMeshrun(args: string[]): Promise<string> {
         outputChannel.appendLine('─'.repeat(40));
 
         const child: ChildProcess = spawn('meshrun', args, {
-            shell: true,
+            shell: false,
             env: { ...process.env }
         });
 

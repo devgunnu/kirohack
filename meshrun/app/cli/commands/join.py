@@ -22,8 +22,54 @@ MODELS = [
 
 COMPUTE_OPTIONS = [25, 50, 75, 100]
 
+def _join_non_interactive(compute_pct: int, model_key: str) -> None:
+    """Write state directly — used by the Kiro extension (no TTY available)."""
+    import uuid, time
+
+    hardware = detect_local_hardware()
+    if not hardware["can_run_model"]:
+        print_error("Insufficient hardware. Minimum 6GB VRAM required.")
+        raise typer.Exit(1)
+
+    model_map = {m["key"]: m for m in MODELS}
+    selected_model = model_map.get(model_key, MODELS[0])
+
+    compute_gb = round(hardware["vram_gb"] * compute_pct / 100, 1)
+    earning_rate = get_earning_rate(compute_pct, compute_gb)
+    node_id = f"node-{uuid.uuid4().hex[:6]}"
+    starting_credits = 10.0
+
+    with spinner_joining():
+        result = register_node(node_id, hardware["suggested_layers"], compute_gb)
+        time.sleep(0.5)
+
+    if result["success"]:
+        save_state({
+            "joined": True,
+            "node_id": node_id,
+            "model": selected_model["key"],
+            "compute_allocation": compute_pct,
+            "compute_gb": compute_gb,
+            "layers_assigned": hardware["suggested_layers"],
+            "credits_balance": starting_credits,
+            "earning_rate": earning_rate,
+        })
+        print_success(f"Joined mesh as [cyan]{node_id}[/cyan] · model=[cyan]{selected_model['name']}[/cyan] · compute=[cyan]{compute_pct}%[/cyan]")
+    else:
+        print_error("Registration failed. Check coordinator connection.")
+        raise typer.Exit(1)
+
+
 @app.callback(invoke_without_command=True)
-def join():
+def join(
+    non_interactive: bool = typer.Option(False, "--non-interactive", help="Skip all prompts (for extension use)."),
+    compute: int = typer.Option(None, "--compute", help="Compute allocation percentage (25/50/75/100)."),
+    model: str = typer.Option(None, "--model", help="Model key (qwen2.5-3b / llama3.2-3b / phi-3-mini)."),
+):
+    if non_interactive:
+        _join_non_interactive(compute or 50, model or "qwen2.5-3b")
+        return
+
     if is_joined():
         state = get_state()
         console.print()
