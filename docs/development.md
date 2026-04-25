@@ -45,6 +45,9 @@ python -m pytest meshrun/ -v
 # Run specific test file
 python -m pytest meshrun/worker/test_protocol.py -v
 
+# Run secure protocol tests
+python -m pytest meshrun/worker/test_secure_protocol.py -v
+
 # Run with coverage
 python -m pytest meshrun/ --cov=meshrun --cov-report=html -v
 ```
@@ -87,10 +90,19 @@ python -m pytest meshrun/ -v --hypothesis-max-examples=500
 ```
 meshrun/
   worker/
-    protocol.py           # TCP binary protocol (header, framing, tensor serialization)
-    connection_pool.py     # Persistent TCP connection management
-    shard_manager.py       # Safetensors selective download, GPU loading, caching
-    test_protocol.py       # Tests for protocol.py
+    protocol.py              # TCP binary protocol (header, framing, tensor serialization, encryption)
+    connection_pool.py       # Persistent TCP connection management
+    shard_manager.py         # Safetensors selective download, GPU loading, caching
+    layer_engine.py          # Forward pass execution through transformer layers
+    resource_monitor.py      # GPU memory/utilization tracking, heartbeat snapshots
+    layer_registry.py        # Layer assignment storage and pipeline topology queries
+    coordinator_client.py    # gRPC client for Coordinator communication
+    node.py                  # Worker node lifecycle orchestration
+    serving.py               # Serving loop — request processing pipeline
+    test_protocol.py         # Tests for protocol.py
+    test_secure_protocol.py  # Tests for secure protocol (AES-GCM)
+  security/
+    crypto.py                # Standalone AES-256-GCM encryption helpers
 ```
 
 ## Binary Protocol Rules
@@ -110,3 +122,14 @@ meshrun/
 - Blocking I/O is acceptable for POC scope
 - Failure handling: single retry to backup node, then fail-fast
 - Resource monitoring is observe-only; memory limits are user-configured
+- Session keys for encryption are distributed via the gRPC control plane
+
+## Adding New Components
+
+1. Create a new file under `meshrun/worker/` (one sub-component per file)
+2. Follow the existing patterns: `dataclass(frozen=True, slots=True)` for value types, `IntEnum` for enums
+3. Add type hints to all function signatures
+4. Write docstrings on all public classes and functions
+5. Create a corresponding test file alongside the source (e.g., `test_mycomponent.py`)
+6. Update `docs/worker-components.md` or create a new doc file as appropriate
+7. Update `docs/api-reference.md` with the public interface

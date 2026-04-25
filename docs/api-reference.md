@@ -2,7 +2,7 @@
 
 ## meshrun.worker.protocol
 
-TCP binary protocol implementation: header serialization, reliable framing, and tensor serialization.
+TCP binary protocol implementation: header serialization, reliable framing, tensor serialization, and AES-256-GCM encryption.
 
 ### Constants
 
@@ -12,16 +12,21 @@ TCP binary protocol implementation: header serialization, reliable framing, and 
 | `HEADER_STRUCT_FORMAT` | `<BIIIBB4IB`         | Little-endian struct format for the header  |
 | `MAX_DIMS`             | 4                    | Maximum number of tensor dimensions         |
 | `DTYPE_SIZE`           | `{FP16: 2, INT8: 1}` | Byte size per element for each dtype        |
+| `NONCE_SIZE`           | 12                   | AES-GCM nonce size (96-bit)                 |
+| `TAG_SIZE`             | 16                   | AES-GCM authentication tag size (128-bit)   |
+| `WIRE_LEN_SIZE`        | 4                    | Length prefix size for encrypted messages   |
 
 ### Enums
 
 **MessageType(IntEnum)**
+
 - `FORWARD = 1` — Hidden states flowing through pipeline
 - `RESULT = 2` — Final logits returned to client
 - `ERROR = 3` — Error response
 - `HEARTBEAT_DATA = 4` — Data-plane heartbeat
 
 **DType(IntEnum)**
+
 - `FP16 = 1` — IEEE 754 half-precision (2 bytes/element)
 - `INT8 = 2` — Signed 8-bit integer (1 byte/element)
 
@@ -41,11 +46,12 @@ class Header:
 ```
 
 **Methods:**
+
 - `validate() -> None` — Validate all fields per protocol spec. Raises `ValueError`.
 - `pack() -> bytes` — Serialize to exactly 32 bytes (little-endian).
 - `Header.unpack(data: bytes) -> Header` — Deserialize 32 bytes, auto-validates. Raises `ValueError`.
 
-### Functions
+### Plaintext Functions
 
 **`read_exact(sock, n) -> bytes`**
 Read exactly `n` bytes from a TCP socket, looping on `recv()`. Raises `ConnectionError` on EOF, propagates `socket.timeout`.
@@ -65,6 +71,23 @@ Read a complete message: header (32 bytes) + payload. Returns `(header, tensor_d
 **`write_message(sock, header, tensor_data) -> None`**
 Write a complete message: validates tensor length, serializes, writes header + payload.
 
+### Encryption Functions
+
+**`generate_session_key() -> bytes`**
+Generate a random 256-bit (32-byte) AES session key via `os.urandom(32)`.
+
+**`encrypt_message(plaintext, key) -> bytes`**
+Encrypt plaintext with AES-256-GCM. Returns `[12-byte nonce][ciphertext + 16-byte tag]`.
+
+**`decrypt_message(encrypted_blob, key) -> bytes`**
+Decrypt an AES-256-GCM encrypted blob. Raises `InvalidTag` on wrong key or tampered data.
+
+**`write_message_secure(sock, header, tensor_data, key) -> None`**
+Write an encrypted message. Validates, serializes, encrypts with fresh nonce, prepends 4-byte length prefix, writes via `write_all`. Wire format: `[4-byte len][12-byte nonce][ciphertext][16-byte tag]`.
+
+**`read_message_secure(sock, key) -> tuple[Header, list]`**
+Read and decrypt a message. Reads 4-byte length prefix, reads encrypted blob, decrypts, parses header + payload. Raises `InvalidTag` on decryption failure.
+
 ---
 
 ## meshrun.worker.connection_pool
@@ -74,6 +97,7 @@ Persistent TCP connection management for the data plane.
 ### Enums
 
 **ConnectionState(IntEnum)**
+
 - `DISCONNECTED = 0`
 - `CONNECTING = 1`
 - `CONNECTED = 2`
@@ -122,7 +146,7 @@ Selective download and lifecycle management of model shards using safetensors fo
 
 ### Data Classes
 
-**`LayerRange(start: int, end: int)`** — Immutable, both inclusive. Property: `count -> int`.
+**`LayerRange(start: int, end: int)`** — Immutable, both inclusive. Property: `count -> int`. Validates `start >= 0` and `end >= start`.
 
 **`ShardMetadata`** — Mutable shard state: model_id, model_url, layer_range, dtype, cache_dir, memory_footprint_mb, load_status, bytes_downloaded, bytes_total, loaded_tensors, error_message. Property: `download_progress -> float`.
 
@@ -150,3 +174,217 @@ Selective download and lifecycle management of model shards using safetensors fo
 
 - `SafetensorsHeaderError` — Header fetch/parse failures
 - `ShardValidationError` — Shard validation failures
+
+---
+
+## meshrun.worker.layer_engine
+
+Forward pass execution through hosted transformer layers.
+
+### Data Classes
+
+**`TransformerLayer`** — Holds weight tensors for a single transformer layer: attention Q/K/V/O projections, MLP gate/up/down projections, input/post-attention RMSNorm weights.
+
+**`LayerEngine`** — Stateful engine: ordered list of `TransformerLayer` instances, optional LM head weight, layer range, configuration (num_heads, head_dim, is_final_node).
+
+### Functions
+
+**`build_layer_engine(loaded_tensors, layer_start, layer_end, is_final_node, device) -> LayerEngine`** — Construct engine from loaded shard tensors. Groups tensors by layer index, infers head configuration, validates completeness.
+
+**`forward(engine, hidden_states, step_id) -> Tensor`** — Sequential forward pass through all hosted layers. Applies RMSNorm → Attention → Residual → RMSNorm → MLP → Residual per layer. If final node, applies LM head to produce logits. Validates output for NaN/Inf.
+
+**`warm_up(engine, hidden_dim, device, dtype) -> None`** — Run dummy forward pass to pre-allocate GPU kernels and activation memory.
+
+---
+
+## meshrun.worker.resource_monitor
+
+GPU memory and utilization tracking with heartbeat snapshots.
+
+### Data Classes
+
+**`GpuMetrics`** — Immutable GPU state snapshot: gpu_memory_total_mb, gpu_memory_used_mb, gpu_memory_free_mb, gpu_utilization (0.0-1.0). Validates all values are non-negative and free + used <= total.
+
+**`HeartbeatSnapshot`** — Subset for heartbeat messages: gpu_utilization, memory_used_mb, active_requests.
+
+### ResourceMonitor
+
+**`__init__(gpu_memory_limit_mb, poll_interval_s=1.0, device_index=0)`** — Initialize monitor with user-configured memory limit.
+
+**`start() -> None`** — Start background polling thread.
+
+**`stop() -> None`** — Stop background polling thread.
+
+**`poll_once() -> GpuMetrics`** — Poll GPU metrics once (synchronous).
+
+**`get_latest_metrics() -> Optional[GpuMetrics]`** — Return most recent polled metrics.
+
+**`get_heartbeat_snapshot() -> HeartbeatSnapshot`** — Return current metrics for heartbeat.
+
+**`increment_active_requests() -> int`** / **`decrement_active_requests() -> int`** — Thread-safe request counting.
+
+**`set_shard_memory_mb(mb) -> None`** / **`set_activation_memory_mb(mb) -> None`** — Update memory tracking.
+
+**`is_over_limit() -> bool`** — Check if GPU usage exceeds configured limit.
+
+**Properties:** `gpu_memory_limit_mb`, `poll_interval_s`, `is_polling`, `active_requests`, `shard_memory_mb`, `activation_memory_mb`.
+
+---
+
+## meshrun.worker.layer_registry
+
+Layer assignment storage and pipeline topology queries.
+
+### Enums
+
+**AssignmentDType(IntEnum)** — `FP16 = 1`, `INT8 = 2`
+
+### Data Classes
+
+**`LayerAssignment`** — Immutable assignment: node_id, model_id, model_url, layer_start, layer_end, dtype, is_final_node, downstream_node, upstream_nodes. Property: `layer_count -> int`. Validates all invariants on construction.
+
+### LayerAssignmentRegistry
+
+Thread-safe registry storing exactly one assignment at a time.
+
+**`accept_layer_assignment(assignment) -> None`** — Store a new assignment (replaces previous).
+
+**`clear() -> None`** — Remove current assignment.
+
+**Properties:** `has_assignment -> bool`, `assignment -> Optional[LayerAssignment]`.
+
+**Query methods:** `get_downstream_address()`, `get_upstream_addresses()`, `get_layer_range()`, `get_dtype()`, `is_final_node()`, `get_model_id()`, `get_model_url()`, `get_node_id()`.
+
+---
+
+## meshrun.worker.coordinator_client
+
+gRPC client abstraction for Coordinator communication.
+
+### Enums
+
+**RegistrationStatus(IntEnum)** — `OK = 0`, `ALREADY_REGISTERED = 1`, `REJECTED = 2`
+
+### Data Classes
+
+- `CapacityInfo` — gpu_memory_total_mb, gpu_memory_free_mb, gpu_memory_limit_mb
+- `RegisterRequest` — node_id, address, grpc_address, capacity
+- `RegisterResponse` — success, message
+- `ConfirmReadyRequest` — node_id, layers_loaded (list of ints)
+- `ConfirmReadyResponse` — success, message
+- `HeartbeatRequest` — node_id, gpu_utilization, memory_used_mb, active_requests
+- `HeartbeatResponse` — success
+- `ReportFailureRequest` — request_id, failed_node_id, node_id
+- `RerouteInfo` — backup_node_id, backup_address
+- `ReportFailureResponse` — success, reroute_info
+
+### CoordinatorClient (Abstract Base)
+
+**`register(request) -> RegisterResponse`**
+
+**`confirm_ready(request) -> ConfirmReadyResponse`**
+
+**`heartbeat(request) -> HeartbeatResponse`**
+
+**`report_failure(request) -> ReportFailureResponse`**
+
+**`close() -> None`**
+
+### Implementations
+
+- `GrpcCoordinatorClient(coordinator_address)` — Real gRPC client (pending proto generation)
+- `StubCoordinatorClient(...)` — In-memory stub for testing, accepts pre-configured responses
+
+---
+
+## meshrun.worker.node
+
+Worker node lifecycle orchestration.
+
+### Enums
+
+**NodeState(IntEnum)** — `INITIALIZING = 0`, `REGISTERING = 1`, `WAITING_ASSIGNMENT = 2`, `LOADING_SHARD = 3`, `VALIDATING = 4`, `READY = 5`, `SERVING = 6`, `DRAINING = 7`, `ERROR = 8`
+
+### Data Classes
+
+- `NodeCapacity` — gpu_memory_total_mb, gpu_memory_free_mb, gpu_memory_limit_mb
+- `NodeConfig` — address, grpc_address, coordinator_address, gpu_memory_limit_mb, poll_interval_s
+
+### WorkerNode
+
+**`__init__(config, coordinator_client=None)`** — Initialize with config and optional client override.
+
+**`startup() -> NodeCapacity`** — Initialize Resource Monitor, query GPU, generate node_id.
+
+**`register_with_coordinator() -> RegisterResponse`** — Send Register RPC.
+
+**`accept_layer_assignment(...) -> None`** — Store assignment, load shard, validate.
+
+**`confirm_ready() -> ConfirmReadyResponse`** — Send ConfirmReady RPC.
+
+**`build_engine_and_serve(hidden_dim) -> None`** — Build Layer Engine, start serving + heartbeat.
+
+**`start_serving(on_connection=None) -> ServingLoop`** — Start the serving loop.
+
+**`start_heartbeat() -> HeartbeatSender`** — Start periodic heartbeat sender.
+
+**`run_lifecycle(...) -> None`** — Run full lifecycle end-to-end.
+
+**Properties:** `node_id`, `state`, `config`, `capacity`, `shard_metadata`, `resource_monitor`, `connection_pool`, `layer_registry`, `coordinator_client`, `serving_loop`, `heartbeat_sender`, `layer_engine`.
+
+### HeartbeatSender
+
+**`__init__(coordinator_client, resource_monitor, node_id, interval_s=5.0)`**
+
+**`start() -> None`** / **`stop() -> None`** — Lifecycle management.
+
+**`send_once() -> HeartbeatResponse`** — Send a single heartbeat.
+
+**Properties:** `is_running`, `consecutive_failures`.
+
+---
+
+## meshrun.worker.serving
+
+Request processing pipeline for the serving state.
+
+### Data Classes
+
+- `ServingConfig` — listen_addr, recv_timeout_s
+- `ServingStats` — total_success, total_failures. Methods: `record_success()`, `record_failure()`.
+
+### ServingLoop
+
+**`__init__(config, connection_pool, layer_engine, layer_registry, resource_monitor, coordinator_client)`**
+
+**`start() -> None`** — Start accepting connections and processing requests.
+
+**`stop() -> None`** — Stop the serving loop.
+
+**Properties:** `stats -> ServingStats`, `is_running -> bool`.
+
+### Internal Functions
+
+- `_handle_connection(...)` — Process a single TCP connection: read message → forward pass → send downstream
+- `_send_downstream(...)` — Send output to downstream node with failure handling and reroute
+- `_send_error_upstream(...)` — Send ERROR message back to upstream on unrecoverable failure
+- `_build_response_header(...)` — Build FORWARD or RESULT header based on pipeline position
+- `_build_error_header(...)` — Build ERROR header for failure responses
+
+---
+
+## meshrun.security.crypto
+
+Standalone AES-256-GCM encryption helpers (separate from protocol.py's integrated encryption).
+
+**`generate_session_key() -> bytes`** — 32 random bytes.
+
+**`derive_key_from_password(password, salt=None) -> tuple[bytes, bytes]`** — PBKDF2-HMAC-SHA256 derivation. Returns `(key, salt)`.
+
+**`encrypt(plaintext, key, aad=None) -> bytes`** — AES-256-GCM encrypt. Returns `[nonce][ciphertext+tag]`.
+
+**`decrypt(encrypted_blob, key, aad=None) -> bytes`** — AES-256-GCM decrypt. Raises `InvalidTag`.
+
+**`pack_for_wire(plaintext, key, aad=None) -> bytes`** — Encrypt + frame: `[4-byte len][encrypted_blob]`.
+
+**`unpack_from_wire(wire_data, key, aad=None) -> bytes`** — Unframe + decrypt.
