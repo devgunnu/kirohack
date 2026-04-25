@@ -343,6 +343,10 @@ class WorkerNode:
         # Populated when heartbeat sending starts.
         self._heartbeat_sender: Optional[HeartbeatSender] = None
 
+        # Populated after layer assignment with the AES-256 session key
+        # for encrypted data-plane traffic.
+        self._session_key: Optional[bytes] = None
+
         logger.info(
             "WorkerNode created: node_id=%s, state=%s",
             self._node_id,
@@ -503,6 +507,7 @@ class WorkerNode:
         upstream_nodes: tuple[str, ...] = (),
         device: Optional[str] = None,
         cache_dir: Optional[str] = None,
+        session_key: Optional[bytes] = None,
     ) -> ShardMetadata:
         """Accept a layer assignment from the Coordinator and begin shard loading.
 
@@ -538,6 +543,9 @@ class WorkerNode:
         cache_dir:
             Local directory for cached weights.  Defaults to
             ``'.cache/meshrun'``.
+        session_key:
+            AES-256 session key (32 bytes) for encrypted data-plane
+            traffic.  Distributed by the Coordinator during assignment.
 
         Returns
         -------
@@ -557,6 +565,8 @@ class WorkerNode:
             )
 
         # ── 1. Store assignment in the registry ─────────────────────────
+        self._session_key = session_key
+
         assignment = LayerAssignment(
             node_id=self._node_id,
             model_id=model_id,
@@ -873,6 +883,7 @@ class WorkerNode:
             coordinator_client=self._coordinator_client,
             config=serving_config,
             device=resolved_device,
+            session_key=self._session_key,
         )
 
         self._serving_loop.start()

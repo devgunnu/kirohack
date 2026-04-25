@@ -17,11 +17,26 @@ from __future__ import annotations
 
 import abc
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import IntEnum, auto
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ── Custom Exceptions ────────────────────────────────────────────────────────
+
+
+class CoordinatorUnavailableError(Exception):
+    """Raised when the Coordinator is unreachable (UNAVAILABLE)."""
+
+
+class CoordinatorDeadlineExceededError(Exception):
+    """Raised when a gRPC call to the Coordinator times out (DEADLINE_EXCEEDED)."""
+
+
+class CoordinatorRpcError(Exception):
+    """Raised for any other gRPC error from the Coordinator."""
 
 
 # ── Response Status ──────────────────────────────────────────────────────────
@@ -291,33 +306,88 @@ class GrpcCoordinatorClient(CoordinatorClient):
     # ── Connection management ────────────────────────────────────────────
 
     def _connect(self) -> None:
-        """Establish the gRPC channel to the Coordinator."""
+        """Establish the gRPC channel and CoordinatorService stub."""
         try:
             import grpc  # type: ignore[import-untyped]
+            from meshrun.coordinator.proto import coordinator_pb2_grpc
 
             self._channel = grpc.insecure_channel(self._address)
-            logger.info(
-                "gRPC channel opened to Coordinator at %s", self._address
+            self._stub = coordinator_pb2_grpc.CoordinatorServiceStub(
+                self._channel
             )
-            # Stub will be assigned once proto stubs are generated:
-            # self._stub = coordinator_pb2_grpc.CoordinatorStub(self._channel)
+            logger.info(
+                "gRPC channel + stub opened to Coordinator at %s",
+                self._address,
+            )
         except ImportError:
             logger.warning(
-                "grpcio not installed — GrpcCoordinatorClient will not "
-                "be able to communicate with the Coordinator"
+                "grpcio or proto stubs not available — "
+                "GrpcCoordinatorClient will not be able to communicate "
+                "with the Coordinator"
             )
             self._channel = None
+            self._stub = None
+
+    def _handle_grpc_error(self, exc: Exception, rpc_name: str):
+        """Inspect a gRPC exception, log it, and raise a typed Python error.
+
+        Parameters
+        ----------
+        exc:
+            The exception caught from a stub call.
+        rpc_name:
+            Human-readable name of the RPC (e.g. ``"Register"``).
+
+        Raises
+        ------
+        CoordinatorUnavailableError
+            If the gRPC status code is UNAVAILABLE.
+        CoordinatorDeadlineExceededError
+            If the gRPC status code is DEADLINE_EXCEEDED.
+        CoordinatorRpcError
+            For all other gRPC errors.
+        """
+        try:
+            import grpc  # type: ignore[import-untyped]
+        except ImportError:
+            raise exc from None
+
+        if not isinstance(exc, grpc.RpcError):
+            raise exc
+
+        code = exc.code()
+        details = exc.details()
+        logger.error(
+            "%s RPC failed: code=%s, details=%s",
+            rpc_name,
+            code.name,
+            details,
+        )
+
+        if code == grpc.StatusCode.UNAVAILABLE:
+            raise CoordinatorUnavailableError(
+                f"{rpc_name} failed: Coordinator unavailable — {details}"
+            ) from exc
+        elif code == grpc.StatusCode.DEADLINE_EXCEEDED:
+            raise CoordinatorDeadlineExceededError(
+                f"{rpc_name} failed: deadline exceeded — {details}"
+            ) from exc
+        else:
+            raise CoordinatorRpcError(
+                f"{rpc_name} failed: {code.name} — {details}"
+            ) from exc
 
     # ── CoordinatorClient interface ──────────────────────────────────────
 
     def register(self, request: RegisterRequest) -> RegisterResponse:
         """Send a ``Register`` RPC to the Coordinator.
 
-        When the proto stubs are available this will translate the
-        ``RegisterRequest`` dataclass into the generated protobuf message
-        and invoke the stub.  Until then it logs the attempt and returns
-        a placeholder OK response so the worker lifecycle can proceed.
+        Translates the ``RegisterRequest`` dataclass into the generated
+        protobuf message, invokes the stub, and translates the response
+        back to a ``RegisterResponse`` dataclass.
         """
+        from meshrun.coordinator.proto import coordinator_pb2
+
         logger.info(
             "Registering with Coordinator at %s: node_id=%s, "
             "address=%s, grpc_address=%s, capacity=(total=%d MB, "
@@ -332,54 +402,69 @@ class GrpcCoordinatorClient(CoordinatorClient):
             request.capacity.gpu_utilization * 100,
         )
 
-        if self._channel is None:
+        if self._stub is None:
             logger.warning(
-                "No gRPC channel available — returning synthetic OK"
+                "No gRPC stub available — returning synthetic OK"
             )
             return RegisterResponse(
                 status=RegistrationStatus.OK,
-                message="synthetic-ack (no grpc channel)",
+                message="synthetic-ack (no grpc stub)",
             )
 
-        # ── Real gRPC call (scaffold) ────────────────────────────────────
-        # Once proto stubs exist, this becomes:
-        #
-        #   pb_request = coordinator_pb2.RegisterRequest(
-        #       node_id=request.node_id,
-        #       address=request.address,
-        #       grpc_address=request.grpc_address,
-        #       capacity=coordinator_pb2.Capacity(
-        #           gpu_memory_total_mb=request.capacity.gpu_memory_total_mb,
-        #           gpu_memory_free_mb=request.capacity.gpu_memory_free_mb,
-        #           memory_limit_mb=request.capacity.memory_limit_mb,
-        #           gpu_utilization=request.capacity.gpu_utilization,
-        #       ),
-        #   )
-        #   pb_response = self._stub.Register(pb_request)
-        #   return RegisterResponse(
-        #       status=RegistrationStatus.OK
-        #           if pb_response.status == 0
-        #           else RegistrationStatus.REJECTED,
-        #       message=pb_response.message,
-        #   )
+        # Build protobuf Capacity message
+        pb_capacity = coordinator_pb2.Capacity(
+            gpu_memory_total_mb=request.capacity.gpu_memory_total_mb,
+            gpu_memory_free_mb=request.capacity.gpu_memory_free_mb,
+            memory_limit_mb=request.capacity.memory_limit_mb,
+            gpu_utilization=request.capacity.gpu_utilization,
+        )
+
+        # Build protobuf RegisterRequest
+        pb_request = coordinator_pb2.RegisterRequest(
+            node_id=request.node_id,
+            address=request.address,
+            grpc_address=request.grpc_address,
+            capacity=pb_capacity,
+            layers_hosted_start=request.layers_hosted[0] if request.layers_hosted else 0,
+            layers_hosted_end=request.layers_hosted[1] if request.layers_hosted else 0,
+        )
+
+        # Map proto RegistrationStatus enum → Python RegistrationStatus
+        _PROTO_STATUS_MAP = {
+            coordinator_pb2.REGISTRATION_STATUS_OK: RegistrationStatus.OK,
+            coordinator_pb2.REGISTRATION_STATUS_REJECTED: RegistrationStatus.REJECTED,
+            coordinator_pb2.REGISTRATION_STATUS_ERROR: RegistrationStatus.ERROR,
+        }
+
+        try:
+            pb_response = self._stub.Register(pb_request)
+        except Exception as exc:
+            return self._handle_grpc_error(exc, "Register")
+
+        status = _PROTO_STATUS_MAP.get(
+            pb_response.status, RegistrationStatus.ERROR
+        )
 
         logger.info(
-            "gRPC channel exists but proto stubs not yet generated — "
-            "returning synthetic OK"
+            "Register response from Coordinator: status=%s, message=%s",
+            status.name,
+            pb_response.message,
         )
+
         return RegisterResponse(
-            status=RegistrationStatus.OK,
-            message="synthetic-ack (stubs pending)",
+            status=status,
+            message=pb_response.message,
         )
 
     def confirm_ready(self, request: ConfirmReadyRequest) -> ConfirmReadyResponse:
         """Send a ``ConfirmReady`` RPC to the Coordinator.
 
-        Signals that the worker node has loaded and validated its shard
-        and is ready to receive Forward requests.  When proto stubs are
-        available this will translate the dataclass into the generated
-        protobuf message.
+        Translates the ``ConfirmReadyRequest`` dataclass into the generated
+        protobuf message, invokes the stub, and translates the response
+        back to a ``ConfirmReadyResponse`` dataclass.
         """
+        from meshrun.coordinator.proto import coordinator_pb2
+
         logger.info(
             "Sending ConfirmReady to Coordinator at %s: node_id=%s, "
             "layers_loaded=%s",
@@ -388,45 +473,48 @@ class GrpcCoordinatorClient(CoordinatorClient):
             request.layers_loaded,
         )
 
-        if self._channel is None:
+        if self._stub is None:
             logger.warning(
-                "No gRPC channel available — returning synthetic ack"
+                "No gRPC stub available — returning synthetic ack"
             )
             return ConfirmReadyResponse(
                 acknowledged=True,
-                message="synthetic-ack (no grpc channel)",
+                message="synthetic-ack (no grpc stub)",
             )
 
-        # ── Real gRPC call (scaffold) ────────────────────────────────────
-        # Once proto stubs exist, this becomes:
-        #
-        #   pb_request = coordinator_pb2.ConfirmReadyRequest(
-        #       node_id=request.node_id,
-        #       layer_start=request.layers_loaded[0],
-        #       layer_end=request.layers_loaded[1],
-        #   )
-        #   pb_response = self._stub.ConfirmReady(pb_request)
-        #   return ConfirmReadyResponse(
-        #       acknowledged=pb_response.acknowledged,
-        #       message=pb_response.message,
-        #   )
+        # Build protobuf ConfirmReadyRequest
+        pb_request = coordinator_pb2.ConfirmReadyRequest(
+            node_id=request.node_id,
+            layer_start=request.layers_loaded[0],
+            layer_end=request.layers_loaded[1],
+        )
+
+        try:
+            pb_response = self._stub.ConfirmReady(pb_request)
+        except Exception as exc:
+            return self._handle_grpc_error(exc, "ConfirmReady")
 
         logger.info(
-            "gRPC channel exists but proto stubs not yet generated — "
-            "returning synthetic ack"
+            "ConfirmReady response from Coordinator: acknowledged=%s, "
+            "message=%s",
+            pb_response.acknowledged,
+            pb_response.message,
         )
+
         return ConfirmReadyResponse(
-            acknowledged=True,
-            message="synthetic-ack (stubs pending)",
+            acknowledged=pb_response.acknowledged,
+            message=pb_response.message,
         )
 
     def heartbeat(self, request: HeartbeatRequest) -> HeartbeatResponse:
         """Send a ``Heartbeat`` RPC to the Coordinator.
 
-        Reports the node's current resource metrics.  When proto stubs
-        are available this will translate the dataclass into the generated
-        protobuf message.
+        Translates the ``HeartbeatRequest`` dataclass into the generated
+        protobuf message, invokes the stub, and translates the response
+        back to a ``HeartbeatResponse`` dataclass.
         """
+        from meshrun.coordinator.proto import coordinator_pb2
+
         logger.debug(
             "Sending Heartbeat to Coordinator at %s: node_id=%s, "
             "gpu_util=%.1f%%, mem_used=%d MB, active=%d",
@@ -437,47 +525,49 @@ class GrpcCoordinatorClient(CoordinatorClient):
             request.active_requests,
         )
 
-        if self._channel is None:
+        if self._stub is None:
             logger.warning(
-                "No gRPC channel available — returning synthetic ack"
+                "No gRPC stub available — returning synthetic ack"
             )
             return HeartbeatResponse(
                 acknowledged=True,
-                message="synthetic-ack (no grpc channel)",
+                message="synthetic-ack (no grpc stub)",
             )
 
-        # ── Real gRPC call (scaffold) ────────────────────────────────────
-        # Once proto stubs exist, this becomes:
-        #
-        #   pb_request = coordinator_pb2.HeartbeatRequest(
-        #       node_id=request.node_id,
-        #       gpu_utilization=request.gpu_utilization,
-        #       memory_used_mb=request.memory_used_mb,
-        #       active_requests=request.active_requests,
-        #   )
-        #   pb_response = self._stub.Heartbeat(pb_request)
-        #   return HeartbeatResponse(
-        #       acknowledged=pb_response.acknowledged,
-        #       message=pb_response.message,
-        #   )
+        # Build protobuf HeartbeatRequest
+        pb_request = coordinator_pb2.HeartbeatRequest(
+            node_id=request.node_id,
+            gpu_utilization=request.gpu_utilization,
+            memory_used_mb=request.memory_used_mb,
+            active_requests=request.active_requests,
+        )
+
+        try:
+            pb_response = self._stub.Heartbeat(pb_request)
+        except Exception as exc:
+            return self._handle_grpc_error(exc, "Heartbeat")
 
         logger.debug(
-            "gRPC channel exists but proto stubs not yet generated — "
-            "returning synthetic ack"
+            "Heartbeat response from Coordinator: acknowledged=%s, "
+            "message=%s",
+            pb_response.acknowledged,
+            pb_response.message,
         )
+
         return HeartbeatResponse(
-            acknowledged=True,
-            message="synthetic-ack (stubs pending)",
+            acknowledged=pb_response.acknowledged,
+            message=pb_response.message,
         )
 
     def report_failure(self, request: ReportFailureRequest) -> ReportFailureResponse:
         """Send a ``ReportFailure`` RPC to the Coordinator.
 
-        Reports that a downstream node is unreachable so the Coordinator
-        can provide backup routing information.  When proto stubs are
-        available this will translate the dataclass into the generated
-        protobuf message.
+        Translates the ``ReportFailureRequest`` dataclass into the generated
+        protobuf message, invokes the stub, and translates the response
+        back to a ``ReportFailureResponse`` dataclass with ``RerouteInfo``.
         """
+        from meshrun.coordinator.proto import coordinator_pb2
+
         logger.warning(
             "Reporting failure to Coordinator at %s: request_id=%d, "
             "failed_node=%s, reporting_node=%s",
@@ -487,46 +577,49 @@ class GrpcCoordinatorClient(CoordinatorClient):
             request.reporting_node_id,
         )
 
-        if self._channel is None:
+        if self._stub is None:
             logger.warning(
-                "No gRPC channel available — returning synthetic ack "
+                "No gRPC stub available — returning synthetic ack "
                 "with no backup"
             )
             return ReportFailureResponse(
                 acknowledged=True,
                 reroute=None,
-                message="synthetic-ack (no grpc channel)",
+                message="synthetic-ack (no grpc stub)",
             )
 
-        # ── Real gRPC call (scaffold) ────────────────────────────────────
-        # Once proto stubs exist, this becomes:
-        #
-        #   pb_request = coordinator_pb2.ReportFailureRequest(
-        #       request_id=request.request_id,
-        #       failed_node_id=request.failed_node_id,
-        #       reporting_node_id=request.reporting_node_id,
-        #   )
-        #   pb_response = self._stub.ReportFailure(pb_request)
-        #   reroute = None
-        #   if pb_response.HasField("reroute"):
-        #       reroute = RerouteInfo(
-        #           backup_addr=pb_response.reroute.backup_addr or None,
-        #           message=pb_response.reroute.message,
-        #       )
-        #   return ReportFailureResponse(
-        #       acknowledged=pb_response.acknowledged,
-        #       reroute=reroute,
-        #       message=pb_response.message,
-        #   )
+        # Build protobuf ReportFailureRequest
+        pb_request = coordinator_pb2.ReportFailureRequest(
+            request_id=request.request_id,
+            failed_node_id=request.failed_node_id,
+            reporting_node_id=request.reporting_node_id,
+        )
+
+        try:
+            pb_response = self._stub.ReportFailure(pb_request)
+        except Exception as exc:
+            return self._handle_grpc_error(exc, "ReportFailure")
+
+        # Translate RerouteInfo if present
+        reroute = None
+        if pb_response.HasField("reroute"):
+            reroute = RerouteInfo(
+                backup_addr=pb_response.reroute.backup_addr or None,
+                message=pb_response.reroute.message,
+            )
 
         logger.info(
-            "gRPC channel exists but proto stubs not yet generated — "
-            "returning synthetic ack with no backup"
+            "ReportFailure response from Coordinator: acknowledged=%s, "
+            "reroute=%s, message=%s",
+            pb_response.acknowledged,
+            reroute,
+            pb_response.message,
         )
+
         return ReportFailureResponse(
-            acknowledged=True,
-            reroute=None,
-            message="synthetic-ack (stubs pending)",
+            acknowledged=pb_response.acknowledged,
+            reroute=reroute,
+            message=pb_response.message,
         )
 
     def close(self) -> None:
