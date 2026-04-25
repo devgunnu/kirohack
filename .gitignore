@@ -43,3 +43,12 @@ config.local.toml
 # Logs
 *.log
 logs/
+
+.*_cache
+*.py[cod]
+
+# Test / hypothesis artefacts
+.hypothesis/
+
+# Local model weights — never commit large binaries
+meshrun/security/models/
