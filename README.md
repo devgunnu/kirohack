@@ -4,16 +4,16 @@ Distributed AI inference pipeline for ~3B parameter LLMs. Pipelines transformer 
 
 ## Quick Start
 
-```powershell
+```bash
+# Clone and setup
+git clone https://github.com/devgunnu/kirohack.git
+cd kirohack
+
+# Install dependencies
 uv venv .venv
 .venv\Scripts\activate
 uv pip install -e .
-uv pip install pytest hypothesis ruff mypy
-```
-
-## Documentation
-
-Full documentation lives in [`docs/`](docs/README.md):
+uv pip install pytest hypothesis cryptography
 
 - [Installation Guide](docs/installation.md) — Environment setup, dependencies, first run
 - [Architecture Overview](docs/architecture.md) — System design, components, data flow
@@ -53,6 +53,26 @@ meshrun/
   security/          # Standalone encryption utilities
 ```
 
-## License
+## Tech Stack
 
-See LICENSE file.
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| Control Plane | gRPC + Protobuf | Node registration, health checks, routing |
+| Data Plane | Custom TCP binary protocol | Tensor streaming between nodes |
+| Encryption | AES-256-GCM (cryptography lib) | Hop-to-hop authenticated encryption |
+| Model Format | Safetensors | Selective layer download via HTTP Range |
+| Inference | PyTorch | Forward pass execution on GPU |
+| Quantization | fp16 / int8 | Reduced memory + transfer size |
+| Testing | pytest + Hypothesis | Unit + property-based + integration tests |
+
+## Built With
+
+- [Kiro](https://kiro.dev) — Spec-driven development, agent hooks, powers
+- [Context7](https://context7.com) — Up-to-date library documentation for MCP
+- [Sequential Thinking](https://github.com/modelcontextprotocol/servers) — Step-by-step reasoning for complex design decisions
+
+## Team — Port 37
+
+- **Aaditya** — Security layer, encryption integration, tensor stability testing
+- **Gunbir** — Binary TCP protocol, worker node architecture, connection management
+- **Vishal** — Coordinator, routing logic, priority queue, fault tolerance
