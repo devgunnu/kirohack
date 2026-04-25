@@ -167,30 +167,57 @@ let simulation, svg, nodeElements, linkElements;
 
 function initGraph() {
     const container = document.getElementById('node-graph');
-    const width = container.clientWidth;
-    const height = container.clientHeight || 400;
+    const width = container.clientWidth || 400;
+    const height = container.clientHeight || 300;
 
     svg = d3.select('#node-graph')
         .append('svg')
         .attr('width', width)
         .attr('height', height);
 
+    // Resolve link references to node objects
+    const graphNodes = state.nodes;
+    const graphLinks = state.links.map(l => ({
+        source: graphNodes.find(n => n.id === l.source),
+        target: graphNodes.find(n => n.id === l.target)
+    }));
+
+    // Fixed positions — no force simulation scatter
+    const nodePositions = {
+        'node-a': { x: width * 0.25, y: height * 0.5 },
+        'node-b': { x: width * 0.5,  y: height * 0.25 },
+        'node-c': { x: width * 0.75, y: height * 0.5 },
+        'node-d': { x: width * 0.5,  y: height * 0.75 },
+    };
+
+    graphNodes.forEach(d => {
+        d.x = nodePositions[d.id]?.x ?? width / 2;
+        d.y = nodePositions[d.id]?.y ?? height / 2;
+        d.fx = d.x;
+        d.fy = d.y;
+    });
+
     // Create links
     linkElements = svg.append('g')
         .selectAll('line')
-        .data(state.links)
+        .data(graphLinks)
         .enter()
         .append('line')
         .attr('class', 'link')
-        .attr('id', d => `link-${d.source}-${d.target}`);
+        .attr('id', d => `link-${d.source.id}-${d.target.id}`)
+        .attr('x1', d => d.source.x)
+        .attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x)
+        .attr('y2', d => d.target.y);
 
     // Create node groups
     const nodeGroups = svg.append('g')
         .selectAll('g')
-        .data(state.nodes)
+        .data(graphNodes)
         .enter()
         .append('g')
-        .attr('class', 'node-group');
+        .attr('class', 'node-group')
+        .attr('transform', d => `translate(${d.x}, ${d.y})`);
 
     // Node circles
     nodeElements = nodeGroups.append('circle')
@@ -211,12 +238,31 @@ function initGraph() {
         .attr('dy', 48)
         .text(d => `Layers ${d.layers}`);
 
-    // Force simulation
-    simulation = d3.forceSimulation(state.nodes)
-        .force('link', d3.forceLink(state.links).id(d => d.id).distance(150))
-        .force('charge', d3.forceManyBody().strength(-300))
-        .force('center', d3.forceCenter(width / 2, height / 2))
-        .on('tick', ticked);
+    // Resize observer for Kiro webview panel
+    const node = svg.selectAll('.node-group');
+    const link = svg.selectAll('.link');
+
+    const resizeObserver = new ResizeObserver(() => {
+        const newWidth = container.clientWidth;
+        const newHeight = container.clientHeight;
+        svg.attr('width', newWidth).attr('height', newHeight);
+        const newPositions = {
+            'node-a': { x: newWidth * 0.25, y: newHeight * 0.5 },
+            'node-b': { x: newWidth * 0.5,  y: newHeight * 0.25 },
+            'node-c': { x: newWidth * 0.75, y: newHeight * 0.5 },
+            'node-d': { x: newWidth * 0.5,  y: newHeight * 0.75 },
+        };
+        graphNodes.forEach(d => {
+            d.fx = newPositions[d.id]?.x ?? newWidth / 2;
+            d.fy = newPositions[d.id]?.y ?? newHeight / 2;
+            d.x = d.fx;
+            d.y = d.fy;
+        });
+        node.attr('transform', d => `translate(${d.x},${d.y})`);
+        link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+            .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    });
+    resizeObserver.observe(container);
 }
 
 function ticked() {
