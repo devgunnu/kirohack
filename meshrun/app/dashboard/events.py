@@ -1,93 +1,109 @@
-"""
-Mock event stream for the MeshRun dashboard.
+"""Dashboard event streaming - connects to real Coordinator events."""
 
-This module provides a mock event generator that simulates real coordinator events.
-The dashboard server imports from here and streams events to connected clients.
-"""
+from __future__ import annotations
 
 import asyncio
-import random
-import time
+import logging
 from typing import AsyncGenerator
 
-# TODO: replace with real coordinator websocket subscription
+import grpc
 
-NODE_IDS = ["node-a", "node-b", "node-c", "node-d"]
+from meshrun.coordinator.proto import coordinator_pb2, coordinator_pb2_grpc
+from meshrun.app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
-async def mock_event_stream() -> AsyncGenerator[dict, None]:
+def _coordinator_address() -> str:
+    addr = settings.coordinator_url
+    if addr.startswith("http://"):
+        addr = addr[len("http://"):]
+    elif addr.startswith("https://"):
+        addr = addr[len("https://"):]
+    return addr
+
+
+async def stream_events() -> AsyncGenerator[dict, None]:
+    """Stream real-time events from the Coordinator.
+
+    Yields event dictionaries with type and payload. Until a dedicated
+    SubscribeEvents RPC exists on the Coordinator we poll
+    GetNetworkStatus periodically and emit derived events.
     """
-    Yields mock events simulating real coordinator events.
-    Each event has a type and payload.
-    Event types: node_status, job_started, job_hop, job_complete, queue_update, stats_update
-    """
-    job_counter = 1
-    while True:
-        await asyncio.sleep(random.uniform(0.8, 2.0))
+    addr = _coordinator_address()
+    channel = grpc.insecure_channel(addr)
+    stub = coordinator_pb2_grpc.CoordinatorServiceStub(channel)
 
-        event_type = random.choice([
-            "job_started", "job_hop", "job_complete",
-            "node_status", "queue_update", "stats_update"
-        ])
+    try:
+        while True:
+            try:
+                request = coordinator_pb2.GetNetworkStatusRequest()
+                # gRPC sync stub call run in thread to avoid blocking the loop.
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None, lambda: stub.GetNetworkStatus(request, timeout=5.0)
+                )
 
-        if event_type == "job_started":
-            yield {
-                "type": "job_started",
-                "job_id": f"job-{job_counter:04d}",
-                "prompt_preview": random.choice([
-                    "Summarize this research paper...",
-                    "Explain transformer architecture...",
-                    "Write unit tests for...",
-                    "Translate this document...",
-                    "Debug this Python function..."
-                ]),
-                "route": random.sample(NODE_IDS[:3], 3),
-                "timestamp": time.time()
+                yield {
+                    "type": "stats_update",
+                    "active_nodes": response.active_nodes,
+                    "total_layers": response.total_layers,
+                    "covered_layers": response.covered_layers,
+                    "queue_depth": response.queue_depth,
+                    "model": response.model_id,
+                    "timestamp": loop.time(),
+                }
+
+                for ni in response.nodes:
+                    yield {
+                        "type": "node_status",
+                        "node_id": ni.node_id,
+                        "address": ni.address,
+                        "status": ni.status,
+                        "layers": f"{ni.layer_start}-{ni.layer_end}",
+                        "timestamp": loop.time(),
+                    }
+
+                await asyncio.sleep(5.0)
+            except Exception as exc:
+                logger.warning("Event stream error: %s", exc)
+                yield {
+                    "type": "error",
+                    "payload": {"message": str(exc)},
+                }
+                await asyncio.sleep(2.0)
+    finally:
+        channel.close()
+
+
+async def get_live_nodes() -> list[dict]:
+    """Fetch current node list from the Coordinator."""
+    addr = _coordinator_address()
+    channel = grpc.insecure_channel(addr)
+    stub = coordinator_pb2_grpc.CoordinatorServiceStub(channel)
+
+    try:
+        loop = asyncio.get_event_loop()
+        request = coordinator_pb2.GetNetworkStatusRequest()
+        response = await loop.run_in_executor(
+            None, lambda: stub.GetNetworkStatus(request, timeout=5.0)
+        )
+        return [
+            {
+                "node_id": ni.node_id,
+                "address": ni.address,
+                "layers": f"{ni.layer_start}-{ni.layer_end}",
+                "status": ni.status,
+                "credits": ni.credits_earned,
             }
-            job_counter += 1
+            for ni in response.nodes
+        ]
+    except Exception as exc:
+        logger.warning("Failed to fetch live nodes: %s", exc)
+        return []
+    finally:
+        channel.close()
 
-        elif event_type == "job_hop":
-            yield {
-                "type": "job_hop",
-                "job_id": f"job-{max(1, job_counter-1):04d}",
-                "from_node": random.choice(NODE_IDS[:2]),
-                "to_node": random.choice(NODE_IDS[1:3]),
-                "latency_ms": round(random.uniform(30, 60), 1),
-                "timestamp": time.time()
-            }
 
-        elif event_type == "job_complete":
-            yield {
-                "type": "job_complete",
-                "job_id": f"job-{max(1, job_counter-1):04d}",
-                "tokens": random.randint(20, 80),
-                "total_latency": round(random.uniform(0.8, 2.5), 2),
-                "cost_saved_usd": round(random.uniform(0.001, 0.005), 4),
-                "co2_avoided_g": round(random.uniform(0.0005, 0.002), 4),
-                "timestamp": time.time()
-            }
-
-        elif event_type == "node_status":
-            yield {
-                "type": "node_status",
-                "node_id": random.choice(NODE_IDS),
-                "status": random.choice(["active", "active", "active", "idle"]),
-                "latency_ms": round(random.uniform(30, 55), 1),
-                "timestamp": time.time()
-            }
-
-        elif event_type == "queue_update":
-            yield {
-                "type": "queue_update",
-                "depth": random.randint(0, 5),
-                "timestamp": time.time()
-            }
-
-        elif event_type == "stats_update":
-            yield {
-                "type": "stats_update",
-                "total_tokens": random.randint(10000, 50000),
-                "total_cost_saved_usd": round(random.uniform(5.0, 25.0), 2),
-                "total_co2_avoided_g": round(random.uniform(2.0, 10.0), 4),
-                "timestamp": time.time()
-            }
+# Backward-compatible alias for any caller still importing the old name.
+mock_event_stream = stream_events

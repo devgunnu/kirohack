@@ -76,6 +76,11 @@ class CoordinatorServiceStub(object):
                 request_serializer=coordinator__pb2.AcceptLayerAssignmentRequest.SerializeToString,
                 response_deserializer=coordinator__pb2.AcceptLayerAssignmentResponse.FromString,
                 _registered_method=True)
+        self.GetNetworkStatus = channel.unary_unary(
+                '/meshrun.coordinator.CoordinatorService/GetNetworkStatus',
+                request_serializer=coordinator__pb2.GetNetworkStatusRequest.SerializeToString,
+                response_deserializer=coordinator__pb2.GetNetworkStatusResponse.FromString,
+                _registered_method=True)
 
 
 class CoordinatorServiceServicer(object):
@@ -139,6 +144,13 @@ class CoordinatorServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetNetworkStatus(self, request, context):
+        """Get full network status (for CLI and dashboard).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_CoordinatorServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -181,6 +193,11 @@ def add_CoordinatorServiceServicer_to_server(servicer, server):
                     servicer.AcceptLayerAssignment,
                     request_deserializer=coordinator__pb2.AcceptLayerAssignmentRequest.FromString,
                     response_serializer=coordinator__pb2.AcceptLayerAssignmentResponse.SerializeToString,
+            ),
+            'GetNetworkStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetNetworkStatus,
+                    request_deserializer=coordinator__pb2.GetNetworkStatusRequest.FromString,
+                    response_serializer=coordinator__pb2.GetNetworkStatusResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -401,6 +418,33 @@ class CoordinatorService(object):
             '/meshrun.coordinator.CoordinatorService/AcceptLayerAssignment',
             coordinator__pb2.AcceptLayerAssignmentRequest.SerializeToString,
             coordinator__pb2.AcceptLayerAssignmentResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetNetworkStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/meshrun.coordinator.CoordinatorService/GetNetworkStatus',
+            coordinator__pb2.GetNetworkStatusRequest.SerializeToString,
+            coordinator__pb2.GetNetworkStatusResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -23,6 +23,7 @@ from meshrun.coordinator.registry import (
     NodeRegistry,
 )
 from meshrun.coordinator.scheduler import (
+    AssignmentPlan,
     InsufficientCapacityError,
     LayerMap,
     PriorityQueue,
@@ -31,6 +32,7 @@ from meshrun.coordinator.scheduler import (
     compute_assignments,
     handle_failure,
 )
+from meshrun.coordinator.registry import NodeStatus
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +55,14 @@ class CoordinatorServicer(coordinator_pb2_grpc.CoordinatorServiceServicer):
         key_manager: KeyManager,
         layer_map: LayerMap,
         priority_queue: PriorityQueue,
+        server: "CoordinatorServer",
     ) -> None:
         self._registry = registry
         self._health_tracker = health_tracker
         self._key_manager = key_manager
         self._layer_map = layer_map
         self._priority_queue = priority_queue
+        self._server = server
 
     # ── Register ─────────────────────────────────────────────────────
 
@@ -75,6 +79,10 @@ class CoordinatorServicer(coordinator_pb2_grpc.CoordinatorServiceServicer):
                 memory_limit_mb=cap.memory_limit_mb,
                 gpu_utilization=cap.gpu_utilization,
             )
+
+            # Trigger auto-assignment if model config is set
+            self._maybe_trigger_assignment()
+
             return pb2.RegisterResponse(
                 status=pb2.REGISTRATION_STATUS_OK,
                 message=f"Node '{request.node_id}' registered successfully",
@@ -256,6 +264,211 @@ class CoordinatorServicer(coordinator_pb2_grpc.CoordinatorServiceServicer):
         )
         return pb2.AcceptLayerAssignmentResponse(acknowledged=False)
 
+    # ── GetNetworkStatus ─────────────────────────────────────────────
+
+    def GetNetworkStatus(
+        self,
+        request: pb2.GetNetworkStatusRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.GetNetworkStatusResponse:
+        """Return the current network status for CLI and dashboard."""
+        nodes = self._registry.get_all_nodes()
+
+        node_infos: list[pb2.NodeInfo] = []
+        covered_layers: set[int] = set()
+        for node in nodes:
+            # Map NodeStatus to display string
+            if node.status == NodeStatus.HEALTHY:
+                status = "active"
+            elif node.status == NodeStatus.UNHEALTHY:
+                status = "idle"
+            else:
+                status = "unhealthy"
+
+            node_info = pb2.NodeInfo(
+                node_id=node.node_id,
+                address=node.address,
+                grpc_address=node.grpc_address,
+                layer_start=node.layer_start if node.layer_start is not None else 0,
+                layer_end=node.layer_end if node.layer_end is not None else 0,
+                status=status,
+                gpu_utilization=node.gpu_utilization,
+                memory_used_mb=node.memory_used_mb or 0,
+                memory_total_mb=node.gpu_memory_total_mb,
+                requests_served=0,
+                credits_earned=0.0,
+                last_heartbeat_ms=int(node.last_seen * 1000) if node.last_seen else 0,
+            )
+            node_infos.append(node_info)
+
+            if node.layer_start is not None and node.layer_end is not None:
+                covered_layers.update(range(node.layer_start, node.layer_end + 1))
+
+        # Queue depth
+        try:
+            queue_depth = len(self._priority_queue)
+        except TypeError:
+            queue_depth = 0
+
+        # Model info from server's model config (if set), else infer from layer map
+        model_id = ""
+        total_layers = 0
+        model_config = self._server._model_config
+        if model_config:
+            model_id = model_config.get("model_id", "")
+            total_layers = model_config.get("total_layers", 0)
+        else:
+            entries = self._layer_map.get_all_entries()
+            if entries:
+                total_layers = max(e.layer_end for e in entries) + 1
+
+        return pb2.GetNetworkStatusResponse(
+            active_nodes=len([n for n in node_infos if n.status in ("active", "idle")]),
+            total_layers=total_layers,
+            covered_layers=len(covered_layers),
+            model_id=model_id,
+            queue_depth=queue_depth,
+            nodes=node_infos,
+            queue=[],
+        )
+
+    # ── Auto-Assignment Helpers ──────────────────────────────────────
+
+    def _maybe_trigger_assignment(self) -> None:
+        """Check if we have model config and enough nodes, then trigger assignment."""
+        model_config = self._server._model_config
+        if not model_config:
+            logger.debug("No model config set, skipping auto-assignment")
+            return
+
+        healthy_nodes = self._registry.get_all_healthy_nodes()
+        # Allow REGISTERED nodes too, since auto-assignment triggers on register
+        # before nodes have a chance to send ConfirmReady.
+        all_nodes = self._registry.get_all_nodes()
+        candidate_nodes = [
+            n for n in all_nodes
+            if n.status in (NodeStatus.REGISTERED, NodeStatus.HEALTHY)
+        ]
+        nodes_for_plan = candidate_nodes if candidate_nodes else healthy_nodes
+        if not nodes_for_plan:
+            logger.debug("No candidate nodes, skipping auto-assignment")
+            return
+
+        try:
+            plan = compute_assignments(
+                model_id=model_config["model_id"],
+                total_layers=model_config["total_layers"],
+                dtype=model_config["dtype"],
+                nodes=nodes_for_plan,
+                key_manager=self._key_manager,
+            )
+            self._layer_map.set_entries(list(plan.assignments))
+
+            # Update registry with layer assignments
+            for entry in plan.assignments:
+                self._registry.update_node_assignment(
+                    node_id=entry.primary_node_id,
+                    layer_start=entry.layer_start,
+                    layer_end=entry.layer_end,
+                )
+
+            # Push assignments to all workers
+            self._push_assignments_to_workers(plan)
+
+            logger.info(
+                "Auto-assigned %d layers across %d nodes",
+                model_config["total_layers"],
+                len(plan.assignments),
+            )
+        except InsufficientCapacityError as exc:
+            logger.warning("Auto-assignment failed: %s", exc)
+        except Exception:
+            logger.exception("Auto-assignment failed")
+
+    def _push_assignments_to_workers(self, plan: AssignmentPlan) -> None:
+        """Push AcceptLayerAssignment RPCs to all workers in the plan."""
+        # Build a lookup of node_id -> grpc_address from the registry
+        nodes = self._registry.get_all_nodes()
+        grpc_addresses: dict[str, str] = {n.node_id: n.grpc_address for n in nodes}
+
+        # Map dtype string to proto enum
+        dtype_to_proto = {
+            "fp16": pb2.DTYPE_FP16,
+            "int8": pb2.DTYPE_INT8,
+        }
+
+        model_config = self._server._model_config
+        if not model_config:
+            logger.warning("No model config set, cannot push assignments")
+            return
+
+        proto_dtype = dtype_to_proto.get(model_config["dtype"], pb2.DTYPE_INT8)
+        total_layers = model_config["total_layers"]
+
+        entries = list(plan.assignments)
+
+        for idx, entry in enumerate(entries):
+            grpc_addr = grpc_addresses.get(entry.primary_node_id)
+            if not grpc_addr:
+                logger.warning(
+                    "No gRPC address for node %s, skipping assignment push",
+                    entry.primary_node_id,
+                )
+                continue
+
+            # Determine if this is the final node
+            is_final = (entry.layer_end == total_layers - 1)
+
+            # Find downstream node (next entry in the plan)
+            downstream_addr = ""
+            if idx + 1 < len(entries):
+                downstream_addr = entries[idx + 1].primary_address
+
+            # Find upstream nodes (previous entry in the plan)
+            upstream_addrs: list[str] = []
+            if idx > 0:
+                upstream_addrs.append(entries[idx - 1].primary_address)
+
+            request = pb2.AcceptLayerAssignmentRequest(
+                node_id=entry.primary_node_id,
+                model_id=model_config["model_id"],
+                model_url=model_config["model_url"],
+                layer_start=entry.layer_start,
+                layer_end=entry.layer_end,
+                dtype=proto_dtype,
+                is_final_node=is_final,
+                downstream_addr=downstream_addr,
+                upstream_addrs=upstream_addrs,
+                session_key=plan.session_key,
+            )
+
+            try:
+                channel = grpc.insecure_channel(grpc_addr)
+                stub = coordinator_pb2_grpc.CoordinatorServiceStub(channel)
+                response = stub.AcceptLayerAssignment(request, timeout=30.0)
+                channel.close()
+
+                if response.acknowledged:
+                    logger.info(
+                        "Pushed assignment to %s: layers %d-%d",
+                        entry.primary_node_id,
+                        entry.layer_start,
+                        entry.layer_end,
+                    )
+                else:
+                    logger.error(
+                        "Worker %s rejected assignment: %s",
+                        entry.primary_node_id,
+                        response.message,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "Failed to push assignment to %s at %s: %s",
+                    entry.primary_node_id,
+                    grpc_addr,
+                    exc,
+                )
+
 
 # ── Server Lifecycle ─────────────────────────────────────────────────────────
 
@@ -283,6 +496,9 @@ class CoordinatorServer:
         self._host = host
         self._port = port
 
+        # Model configuration (set via TriggerAssignment or CLI)
+        self._model_config: dict | None = None
+
         # Internal components
         self._registry = NodeRegistry()
         self._key_manager = KeyManager()
@@ -302,6 +518,7 @@ class CoordinatorServer:
             key_manager=self._key_manager,
             layer_map=self._layer_map,
             priority_queue=self._priority_queue,
+            server=self,
         )
         self._server = grpc.server(
             futures.ThreadPoolExecutor(max_workers=max_workers),
@@ -348,3 +565,23 @@ class CoordinatorServer:
     @property
     def servicer(self) -> CoordinatorServicer:
         return self._servicer
+
+    @property
+    def model_config(self) -> dict | None:
+        """The current model configuration for auto-assignment."""
+        return self._model_config
+
+    def set_model_config(
+        self,
+        model_id: str,
+        total_layers: int,
+        dtype: str,
+        model_url: str,
+    ) -> None:
+        """Set the model configuration for auto-assignment."""
+        self._model_config = {
+            "model_id": model_id,
+            "total_layers": total_layers,
+            "dtype": dtype,
+            "model_url": model_url,
+        }

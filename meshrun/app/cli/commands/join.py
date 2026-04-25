@@ -8,9 +8,11 @@ from rich.console import Console
 from rich.columns import Columns
 from rich.text import Text
 from rich.rule import Rule
-from app.display.spinners import console, print_success, print_error, print_info, spinner_joining
-from app.client.inference import detect_local_hardware, register_node, get_earning_rate
-from app.state import save_state, is_joined, get_state
+from meshrun.app.display.spinners import console, print_success, print_error, print_info, spinner_joining
+from meshrun.app.client.inference import detect_local_hardware, register_node, get_earning_rate
+from meshrun.app.state import save_state, is_joined, get_state
+from meshrun.app.daemon import spawn_worker, is_running, LOG_FILE
+from meshrun.app.config import settings
 
 app = typer.Typer(help="Register this machine as a worker node.")
 
@@ -22,9 +24,36 @@ MODELS = [
 
 COMPUTE_OPTIONS = [25, 50, 75, 100]
 
+def _coordinator_host_port() -> str:
+    """Return the coordinator address as host:port for gRPC."""
+    addr = settings.coordinator_url
+    if addr.startswith("http://"):
+        addr = addr[len("http://"):]
+    elif addr.startswith("https://"):
+        addr = addr[len("https://"):]
+    return addr
+
+
+def _start_worker_daemon(compute_gb: float) -> int | None:
+    """Spawn the background worker process. Returns PID or None on failure."""
+    if is_running():
+        print_info("Worker daemon already running.")
+        return None
+    gpu_limit_mb = max(1024, int(compute_gb * 1024))
+    try:
+        pid = spawn_worker(
+            coordinator=_coordinator_host_port(),
+            gpu_limit_mb=gpu_limit_mb,
+        )
+        return pid
+    except Exception as exc:
+        print_error(f"Failed to start worker: {exc}")
+        return None
+
+
 def _join_non_interactive(compute_pct: int, model_key: str) -> None:
     """Write state directly — used by the Kiro extension (no TTY available)."""
-    import uuid, time
+    import uuid
 
     hardware = detect_local_hardware()
     if not hardware["can_run_model"]:
@@ -39,25 +68,25 @@ def _join_non_interactive(compute_pct: int, model_key: str) -> None:
     node_id = f"node-{uuid.uuid4().hex[:6]}"
     starting_credits = 10.0
 
-    with spinner_joining():
-        result = register_node(node_id, hardware["suggested_layers"], compute_gb)
-        time.sleep(0.5)
-
-    if result["success"]:
-        save_state({
-            "joined": True,
-            "node_id": node_id,
-            "model": selected_model["key"],
-            "compute_allocation": compute_pct,
-            "compute_gb": compute_gb,
-            "layers_assigned": hardware["suggested_layers"],
-            "credits_balance": starting_credits,
-            "earning_rate": earning_rate,
-        })
-        print_success(f"Joined mesh as [cyan]{node_id}[/cyan] · model=[cyan]{selected_model['name']}[/cyan] · compute=[cyan]{compute_pct}%[/cyan]")
-    else:
-        print_error("Registration failed. Check coordinator connection.")
+    pid = _start_worker_daemon(compute_gb)
+    if pid is None:
         raise typer.Exit(1)
+
+    save_state({
+        "joined": True,
+        "node_id": node_id,
+        "model": selected_model["key"],
+        "compute_allocation": compute_pct,
+        "compute_gb": compute_gb,
+        "layers_assigned": hardware["suggested_layers"],
+        "credits_balance": starting_credits,
+        "earning_rate": earning_rate,
+        "worker_pid": pid,
+    })
+    print_success(
+        f"Joined mesh as [cyan]{node_id}[/cyan] · model=[cyan]{selected_model['name']}[/cyan] "
+        f"· compute=[cyan]{compute_pct}%[/cyan] · worker PID [cyan]{pid}[/cyan]"
+    )
 
 
 @app.callback(invoke_without_command=True)
@@ -217,37 +246,39 @@ def join(
         print_info("Cancelled.")
         raise typer.Exit(0)
 
-    # Register
+    # Spawn worker daemon in the background
     with spinner_joining():
-        result = register_node(node_id, hardware["suggested_layers"], compute_gb)
+        pid = _start_worker_daemon(compute_gb)
         time.sleep(0.8)
 
-    if result["success"]:
-        # Save state
-        save_state({
-            "joined": True,
-            "node_id": node_id,
-            "model": selected_model["key"],
-            "compute_allocation": compute_pct,
-            "compute_gb": compute_gb,
-            "layers_assigned": hardware["suggested_layers"],
-            "credits_balance": starting_credits,
-            "earning_rate": earning_rate,
-        })
-
-        console.print()
-        console.print(Panel(
-            f"[bold green]You're live on the mesh![/bold green]\n\n"
-            f"  Node ID:  [cyan]{node_id}[/cyan]\n"
-            f"  Model:    [cyan]{selected_model['name']}[/cyan]\n"
-            f"  Layers:   [cyan]{hardware['suggested_layers']}[/cyan]\n"
-            f"  Earning:  [green]+{earning_rate} credits per forward pass[/green]\n\n"
-            f"[dim]Run [bold]meshrun status[/bold] to see the network.\n"
-            f"Run [bold]meshrun submit \"your prompt\"[/bold] to run inference.[/dim]",
-            title="[bold green]✓ Joined MeshRun[/bold green]",
-            border_style="green"
-        ))
-        console.print()
-    else:
-        print_error("Registration failed. Check coordinator connection.")
+    if pid is None:
         raise typer.Exit(1)
+
+    save_state({
+        "joined": True,
+        "node_id": node_id,
+        "model": selected_model["key"],
+        "compute_allocation": compute_pct,
+        "compute_gb": compute_gb,
+        "layers_assigned": hardware["suggested_layers"],
+        "credits_balance": starting_credits,
+        "earning_rate": earning_rate,
+        "worker_pid": pid,
+    })
+
+    console.print()
+    console.print(Panel(
+        f"[bold green]You're live on the mesh![/bold green]\n\n"
+        f"  Node ID:    [cyan]{node_id}[/cyan]\n"
+        f"  Model:      [cyan]{selected_model['name']}[/cyan]\n"
+        f"  Layers:     [cyan]{hardware['suggested_layers']}[/cyan]\n"
+        f"  Earning:    [green]+{earning_rate} credits per forward pass[/green]\n"
+        f"  Worker PID: [cyan]{pid}[/cyan] (running in background)\n"
+        f"  Logs:       [dim]{LOG_FILE}[/dim]\n\n"
+        f"[dim]Run [bold]meshrun status[/bold] to see the network.\n"
+        f"Run [bold]meshrun submit \"your prompt\"[/bold] to run inference.\n"
+        f"Run [bold]meshrun leave[/bold] to stop contributing and deregister.[/dim]",
+        title="[bold green]✓ Joined MeshRun[/bold green]",
+        border_style="green"
+    ))
+    console.print()

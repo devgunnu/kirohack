@@ -12,7 +12,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.dashboard.events import mock_event_stream
+from meshrun.app.dashboard.events import stream_events
 
 app = FastAPI(title="MeshRun Dashboard")
 
@@ -43,7 +43,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connected_clients.append(websocket)
     try:
-        async for event in mock_event_stream():
+        async for event in stream_events():
             await websocket.send_text(json.dumps(event))
     except WebSocketDisconnect:
         connected_clients.remove(websocket)

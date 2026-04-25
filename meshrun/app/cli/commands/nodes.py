@@ -2,16 +2,16 @@
 
 import typer
 
-from app.client.inference import get_network_status
-from app.display.spinners import print_success, spinner_connecting
-from app.display.tables import show_nodes_table
+from meshrun.app.client.inference import get_network_status
+from meshrun.app.display.spinners import print_success, spinner_connecting
+from meshrun.app.display.tables import show_nodes_table
 
 app = typer.Typer(help="List all nodes in the mesh network.")
 
 
 @app.callback(invoke_without_command=True)
 def nodes():
-    from app.state import require_joined
+    from meshrun.app.state import require_joined
     require_joined()
 
     with spinner_connecting():

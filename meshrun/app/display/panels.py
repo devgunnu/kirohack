@@ -2,17 +2,21 @@
 
 from rich.panel import Panel
 
-from app.display.spinners import console
+from meshrun.app.display.spinners import console
 
 
-def show_submit_result(job_id: str, prompt_preview: str) -> None:
+def show_submit_result(
+    job_id: str,
+    prompt_preview: str,
+    tokens: int = 0,
+    latency: str = "N/A",
+    hops: list[str] | None = None,
+    cost_saved: str = "N/A",
+    co2_avoided: str = "N/A",
+) -> None:
     """Display inference result panel after a successful submission."""
     preview = prompt_preview[:60]
-    tokens = 42  # TODO: replace with real data
-    latency = "1.24s"  # TODO: replace with real data
-    hops = ["Node A: 0.41s", "Node B: 0.38s", "Node C: 0.45s"]  # TODO: replace with real data
-    cost_saved = "$0.0031"  # TODO: replace with real data
-    co2_avoided = "0.0012g"  # TODO: replace with real data
+    hops = hops or []
 
     body = (
         f"[bold]Job ID:[/bold]          {job_id}\n"
@@ -27,12 +31,13 @@ def show_submit_result(job_id: str, prompt_preview: str) -> None:
     console.print(Panel(body, title="[bold green]Inference Complete[/bold green]", border_style="green"))
 
 
-def show_credits_panel(node_id: str) -> None:
+def show_credits_panel(
+    node_id: str,
+    balance: float = 0.0,
+    compute: str = "0.0 GPU-hours",
+    priority: float = 0.0,
+) -> None:
     """Display the credits summary panel for a node."""
-    balance = 128.4  # TODO: replace with real data
-    compute = "3.2 GPU-hours"  # TODO: replace with real data
-    priority = 94.2  # TODO: replace with real data
-
     body = (
         f"[bold]Node ID:[/bold]              {node_id}\n"
         f"[bold]Credit balance:[/bold]        {balance}\n"
@@ -55,13 +60,13 @@ def show_join_success(node_id: str, layers: str) -> None:
     console.print(Panel(body, title="[bold green]Node Registered[/bold green]", border_style="green"))
 
 
-def show_network_summary() -> None:
+def show_network_summary(
+    active_nodes: int = 0,
+    layers_covered: str = "0 / 0",
+    model_loaded: str = "N/A",
+    queue_depth: str = "0 jobs",
+) -> None:
     """Display the network summary panel."""
-    active_nodes = 4  # TODO: replace with real data
-    layers_covered = "28 / 28"  # TODO: replace with real data
-    model_loaded = "qwen2.5-3b (int8)"  # TODO: replace with real data
-    queue_depth = "2 jobs"  # TODO: replace with real data
-
     body = (
         f"[bold]Active nodes:[/bold]         {active_nodes}\n"
         f"[bold]Total layers covered:[/bold] {layers_covered}\n"

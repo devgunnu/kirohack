@@ -14,6 +14,7 @@ DEFAULT_STATE = {
     "layers_assigned": "",
     "credits_balance": 0.0,
     "earning_rate": 0.0,
+    "worker_pid": 0,
 }
 
 def get_state() -> dict:
@@ -33,7 +34,7 @@ def is_joined() -> bool:
 def require_joined() -> None:
     """Call at the top of every command. Exits with onboarding prompt if not joined."""
     if not is_joined():
-        from app.display.spinners import console
+        from meshrun.app.display.spinners import console
         from rich.panel import Panel
         console.print()
         console.print(Panel(

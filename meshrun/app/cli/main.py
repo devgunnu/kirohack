@@ -3,7 +3,7 @@
 import typer
 from rich import print as rprint
 
-from app.cli.commands import submit, status, join, leave, nodes, credits, dashboard
+from meshrun.app.cli.commands import submit, status, join, leave, nodes, credits, dashboard, coordinator, worker, logs
 
 app = typer.Typer(
     name="meshrun",
@@ -19,6 +19,9 @@ app.add_typer(leave.app, name="leave")
 app.add_typer(nodes.app, name="nodes")
 app.add_typer(credits.app, name="credits")
 app.add_typer(dashboard.app, name="dashboard")
+app.add_typer(coordinator.app, name="coordinator")
+app.add_typer(worker.app, name="worker")
+app.add_typer(logs.app, name="logs")
 
 
 @app.callback(invoke_without_command=True)

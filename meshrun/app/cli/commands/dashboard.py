@@ -6,15 +6,15 @@ import webbrowser
 
 import typer
 
-from app.config import settings
-from app.display.spinners import console, print_info, print_success
+from meshrun.app.config import settings
+from meshrun.app.display.spinners import console, print_info, print_success
 
 app = typer.Typer(help="Launch the MeshRun web dashboard.")
 
 
 @app.callback(invoke_without_command=True)
 def dashboard():
-    from app.dashboard.server import start
+    from meshrun.app.dashboard.server import start
 
     url = f"http://{settings.dashboard_host}:{settings.dashboard_port}"
     print_info(f"Starting dashboard at [bold cyan]{url}[/bold cyan]")

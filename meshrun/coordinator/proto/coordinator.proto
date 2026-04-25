@@ -169,6 +169,45 @@ message TriggerAssignmentResponse {
   string message = 2;
 }
 
+// ── GetNetworkStatus (CLI/Dashboard → Coordinator) ──────────────────────────
+
+message GetNetworkStatusRequest {
+  // Empty for now, can add filters later
+}
+
+message GetNetworkStatusResponse {
+  int32 active_nodes = 1;
+  int32 total_layers = 2;
+  int32 covered_layers = 3;
+  string model_id = 4;
+  int32 queue_depth = 5;
+  repeated NodeInfo nodes = 6;
+  repeated QueueEntry queue = 7;
+}
+
+message NodeInfo {
+  string node_id = 1;
+  string address = 2;
+  string grpc_address = 3;
+  int32 layer_start = 4;
+  int32 layer_end = 5;
+  string status = 6;  // "active", "idle", "unhealthy"
+  float gpu_utilization = 7;
+  int64 memory_used_mb = 8;
+  int64 memory_total_mb = 9;
+  int32 requests_served = 10;
+  float credits_earned = 11;
+  int64 last_heartbeat_ms = 12;
+}
+
+message QueueEntry {
+  string job_id = 1;
+  string prompt_preview = 2;
+  float priority_score = 3;
+  int64 submit_time_ms = 4;
+  int32 position = 5;
+}
+
 // ── Service Definition ──────────────────────────────────────────────────────
 
 service CoordinatorService {
@@ -195,4 +234,7 @@ service CoordinatorService {
 
   // Coordinator pushes assignment to worker (via worker's gRPC address).
   rpc AcceptLayerAssignment (AcceptLayerAssignmentRequest) returns (AcceptLayerAssignmentResponse);
+
+  // Get full network status (for CLI and dashboard).
+  rpc GetNetworkStatus (GetNetworkStatusRequest) returns (GetNetworkStatusResponse);
 }

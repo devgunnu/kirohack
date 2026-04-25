@@ -7,9 +7,9 @@ import typer
 from rich.live import Live
 from rich.text import Text
 
-from app.client.inference import get_job_result, submit_async_job, submit_inference_job
-from app.display.panels import show_submit_result
-from app.display.spinners import console, print_error, print_info, print_success, spinner_routing
+from meshrun.app.client.inference import get_job_result, submit_async_job, submit_inference_job
+from meshrun.app.display.panels import show_submit_result
+from meshrun.app.display.spinners import console, print_error, print_info, print_success, spinner_routing
 
 app = typer.Typer(help="Submit an inference job to the mesh.")
 
@@ -22,7 +22,7 @@ def submit(
     async_mode: bool = typer.Option(False, "--async", "-a", help="Submit job async and return a job ID immediately."),
     job_id: Optional[str] = typer.Option(None, "--job-id", "-j", help="Retrieve result of a previously submitted async job."),
 ):
-    from app.state import require_joined
+    from meshrun.app.state import require_joined
     require_joined()
 
     # Retrieve existing async job

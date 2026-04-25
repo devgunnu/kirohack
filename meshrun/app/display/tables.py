@@ -1,11 +1,13 @@
 """Reusable Rich Table components for MeshRun CLI commands."""
 
+from typing import Any
+
 from rich.table import Table
 
-from app.display.spinners import console
+from meshrun.app.display.spinners import console
 
 
-def show_nodes_table() -> None:
+def show_nodes_table(nodes: list[dict[str, Any]] | None = None) -> None:
     """Render and print the MeshRun nodes table."""
     table = Table(title="MeshRun Nodes")
 
@@ -16,16 +18,38 @@ def show_nodes_table() -> None:
     table.add_column("Credits Earned", justify="right")
     table.add_column("Latency", justify="right")
 
-    # TODO: replace with real data
-    table.add_row("node-a", "192.168.1.10:5001", "0–6", "[green]Active[/green]", "42.1", "38ms")
-    table.add_row("node-b", "192.168.1.11:5001", "7–13", "[green]Active[/green]", "38.7", "41ms")
-    table.add_row("node-c", "192.168.1.12:5001", "14–20", "[yellow]Idle[/yellow]", "21.3", "44ms")
-    table.add_row("node-d", "192.168.1.13:5001", "21–27", "[red]Unreachable[/red]", "9.8", "--")
+    if nodes:
+        for node in nodes:
+            status = node.get("status", "unknown")
+            status_display = {
+                "active": "[green]Active[/green]",
+                "idle": "[yellow]Idle[/yellow]",
+                "unreachable": "[red]Unreachable[/red]",
+                "unhealthy": "[red]Unhealthy[/red]",
+                "unknown": "[dim]Unknown[/dim]",
+            }.get(status, f"[dim]{status}[/dim]")
+
+            credits = node.get("credits", 0.0)
+            try:
+                credits_str = f"{float(credits):.1f}"
+            except (TypeError, ValueError):
+                credits_str = str(credits)
+
+            table.add_row(
+                node.get("node_id", "N/A"),
+                node.get("address", "N/A"),
+                node.get("layers", "N/A"),
+                status_display,
+                credits_str,
+                str(node.get("latency", "--")),
+            )
+    else:
+        table.add_row("[dim]No nodes registered[/dim]", "", "", "", "", "")
 
     console.print(table)
 
 
-def show_status_table() -> None:
+def show_status_table(jobs: list[dict[str, Any]] | None = None) -> None:
     """Render and print the queue status table."""
     table = Table(title="Queue Status")
 
@@ -35,15 +59,27 @@ def show_status_table() -> None:
     table.add_column("Priority Score", justify="right")
     table.add_column("Wait Time", justify="right")
 
-    # TODO: replace with real data
-    table.add_row("1", "job-8a3f", "Summarize this research paper...", "94.2", "0.4s")
-    table.add_row("2", "job-2c1d", "Explain transformer architecture...", "87.1", "1.2s")
-    table.add_row("3", "job-9e7b", "Write unit tests for this function...", "71.3", "2.8s")
+    if jobs:
+        for i, job in enumerate(jobs, 1):
+            preview = str(job.get("prompt", ""))[:40]
+            try:
+                priority = f"{float(job.get('priority', 0.0)):.1f}"
+            except (TypeError, ValueError):
+                priority = str(job.get("priority", "0.0"))
+            table.add_row(
+                str(job.get("position", i)),
+                job.get("job_id", "N/A"),
+                f"{preview}...",
+                priority,
+                str(job.get("wait_time", "0.0s")),
+            )
+    else:
+        table.add_row("[dim]Queue empty[/dim]", "", "", "", "")
 
     console.print(table)
 
 
-def show_credits_history() -> None:
+def show_credits_history(history: list[dict[str, Any]] | None = None) -> None:
     """Render and print the credit history table."""
     table = Table(title="Credit History")
 
@@ -51,10 +87,20 @@ def show_credits_history() -> None:
     table.add_column("Event")
     table.add_column("Credits", justify="right", style="green")
 
-    # TODO: replace with real data
-    table.add_row("2m ago", "Forward pass (layers 0–6)", "+2.4")
-    table.add_row("8m ago", "Forward pass (layers 0–6)", "+2.1")
-    table.add_row("15m ago", "Forward pass (layers 0–6)", "+3.0")
-    table.add_row("1h ago", "Joined network", "+10.0")
+    if history:
+        for entry in history:
+            credits = entry.get("credits", 0.0)
+            try:
+                credits_val = float(credits)
+                credits_display = f"+{credits_val:.1f}" if credits_val >= 0 else f"{credits_val:.1f}"
+            except (TypeError, ValueError):
+                credits_display = str(credits)
+            table.add_row(
+                entry.get("time", "N/A"),
+                entry.get("event", "N/A"),
+                credits_display,
+            )
+    else:
+        table.add_row("[dim]No credit history[/dim]", "", "")
 
     console.print(table)
