@@ -1,0 +1,112 @@
+# Development Guide
+
+## Environment
+
+- Python 3.13+
+- Package manager: uv
+- Shell: PowerShell (Windows)
+- Always activate the virtual environment before running commands
+
+```powershell
+.venv\Scripts\activate
+```
+
+## Code Style
+
+- `dataclass(frozen=True, slots=True)` for immutable value types
+- `IntEnum` for protocol enumerations
+- Type hints on all function signatures with `from __future__ import annotations`
+- Docstrings on all public classes and functions (Google/NumPy style)
+- Constants in `UPPER_SNAKE_CASE` at module level
+- Private helpers prefixed with `_`
+- One sub-component per file
+
+## Linting and Formatting
+
+```powershell
+ruff check .
+ruff format .
+```
+
+## Type Checking
+
+```powershell
+mypy meshrun/
+```
+
+## Testing
+
+Test files live alongside source files: `meshrun/worker/test_protocol.py` tests `meshrun/worker/protocol.py`.
+
+```powershell
+# Run all tests
+python -m pytest meshrun/ -v
+
+# Run specific test file
+python -m pytest meshrun/worker/test_protocol.py -v
+
+# Run with coverage
+python -m pytest meshrun/ --cov=meshrun --cov-report=html -v
+```
+
+### Testing Conventions
+
+- Use `_valid_header(**overrides)` helper pattern for constructing test fixtures
+- Group tests into classes by concern (e.g., `TestValidateAccepts`, `TestRoundTrip`)
+- Use `pytest.raises` with `match=` for error message assertions
+- Mock sockets with `unittest.mock.MagicMock` for TCP tests
+
+### Property-Based Testing
+
+Uses Hypothesis with `@st.composite` strategies for generating valid domain objects.
+
+```python
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+@st.composite
+def valid_headers(draw):
+    # Generate arbitrary valid Header instances
+    ...
+
+class TestRoundTrip:
+    @given(header=valid_headers())
+    @settings(max_examples=200)
+    def test_roundtrip_property(self, header):
+        assert Header.unpack(header.pack()) == header
+```
+
+Run with more examples:
+
+```powershell
+python -m pytest meshrun/ -v --hypothesis-max-examples=500
+```
+
+## Project Layout
+
+```
+meshrun/
+  worker/
+    protocol.py           # TCP binary protocol (header, framing, tensor serialization)
+    connection_pool.py     # Persistent TCP connection management
+    shard_manager.py       # Safetensors selective download, GPU loading, caching
+    test_protocol.py       # Tests for protocol.py
+```
+
+## Binary Protocol Rules
+
+- Fixed 32-byte header, little-endian, packed with `struct`
+- Format string: `<BIIIBB4IB`
+- No serialization libraries in the data plane
+- Tensors serialized as raw contiguous bytes (row-major, C-contiguous)
+- `read_exact(n)` must loop on `recv()` until exactly n bytes accumulated
+- `write_all(data)` must loop on `send()` until all bytes transmitted
+- Always validate headers before reading payloads
+
+## Architecture Rules
+
+- Control plane (gRPC) and data plane (TCP) are strictly separated
+- One persistent TCP connection per node pair, reused across requests
+- Blocking I/O is acceptable for POC scope
+- Failure handling: single retry to backup node, then fail-fast
+- Resource monitoring is observe-only; memory limits are user-configured

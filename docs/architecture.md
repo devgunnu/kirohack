@@ -24,14 +24,14 @@ Node C → Client (TCP: logits after layers 20-29)
 
 Each worker node contains these sub-components:
 
-| Component                 | File                         | Purpose                                                                           |
-| ------------------------- | ---------------------------- | --------------------------------------------------------------------------------- |
-| Message Handler           | `worker/protocol.py`         | TCP binary protocol: header serialization, framing, tensor serialization          |
-| Connection Pool           | `worker/connection_pool.py`  | Persistent TCP connections to downstream nodes, incoming connection acceptance    |
-| Shard Manager             | `worker/shard_manager.py`    | Selective download of model weights via HTTP Range requests, GPU loading, caching |
-| Layer Engine              | `worker/layer_engine.py`     | Forward pass execution through hosted transformer layers                          |
-| Resource Monitor          | `worker/resource_monitor.py` | GPU memory/utilization tracking, heartbeat snapshots                              |
-| Layer Assignment Registry | `worker/layer_registry.py`   | Stores current layer assignment and pipeline topology                             |
+| Component                 | File                                | Status      | Purpose                                                                           |
+| ------------------------- | ----------------------------------- | ----------- | --------------------------------------------------------------------------------- |
+| Message Handler           | `worker/protocol.py`                | Complete    | TCP binary protocol: header serialization, framing, tensor serialization          |
+| Connection Pool           | `worker/connection_pool.py`         | Complete    | Persistent TCP connections to downstream nodes, incoming connection acceptance    |
+| Shard Manager             | `worker/shard_manager.py`           | Complete    | Selective download of model weights via HTTP Range requests, GPU loading, caching |
+| Layer Engine              | `worker/layer_engine.py`            | Complete    | Forward pass execution through hosted transformer layers                          |
+| Resource Monitor          | `worker/resource_monitor.py`        | Complete    | GPU memory/utilization tracking, heartbeat snapshots, memory limit alerting       |
+| Layer Assignment Registry | Planned: `worker/layer_registry.py` | Not Started | Stores current layer assignment and pipeline topology                             |
 
 ## Worker Node Lifecycle
 
@@ -39,13 +39,13 @@ Each worker node contains these sub-components:
 Initializing → Registering → WaitingAssignment → LoadingShard → Validating → Ready → Serving → Draining
 ```
 
-1. **Initializing**: Query local GPU resources, generate node_id
+1. **Initializing**: Query local GPU resources via Resource Monitor, generate node_id
 2. **Registering**: Send Register RPC to Coordinator with capacity info
 3. **WaitingAssignment**: Wait for layer assignment from Coordinator
-4. **LoadingShard**: Shard Manager downloads and loads assigned layer weights
-5. **Validating**: Verify loaded shard matches expected configuration
-6. **Ready**: Send ConfirmReady to Coordinator, ready for inference
-7. **Serving**: Process Forward requests, send heartbeats
+4. **LoadingShard**: Shard Manager selectively downloads assigned layer weights via HTTP Range requests and loads to GPU
+5. **Validating**: Verify loaded shard matches expected configuration (layer count, dtype, hidden dims)
+6. **Ready**: Send ConfirmReady to Coordinator, run Layer Engine warm-up
+7. **Serving**: Process Forward requests via Message Handler → Layer Engine → Connection Pool pipeline, send heartbeats with Resource Monitor snapshots
 8. **Draining**: Graceful shutdown — drain in-flight requests, unload shard, close connections
 
 ## Layer Assignment Strategy

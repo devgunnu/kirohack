@@ -58,47 +58,47 @@ The Shard Manager uses the safetensors format with HTTP Range requests to select
 ## Task 5: Layer Engine
 > Requirements: 4.1, 4.2
 
-- [~] 5.1 Implement Forward(hidden_states, step_id): run sequential forward pass through all hosted layers, return output hidden states
-- [~] 5.2 Implement final-node logic: if is_final_node, apply LM head to produce logits instead of hidden states
-- [~] 5.3 Implement WarmUp: run dummy forward pass to compile GPU kernels and pre-allocate activation memory
-- [~] 5.4 Add output validation: check output tensor has correct shape and contains no NaN/Inf values
+- [x] 5.1 Implement Forward(hidden_states, step_id): run sequential forward pass through all hosted layers, return output hidden states
+- [x] 5.2 Implement final-node logic: if is_final_node, apply LM head to produce logits instead of hidden states
+- [x] 5.3 Implement WarmUp: run dummy forward pass to compile GPU kernels and pre-allocate activation memory
+- [x] 5.4 Add output validation: check output tensor has correct shape and contains no NaN/Inf values
 - [ ] 5.5 ~~Write unit tests for forward pass output shape, final-node logits output, and NaN/Inf detection~~ **SKIPPED - Focus on implementation only**
 
 ## Task 6: Resource Monitor
 > Requirements: 5.1, 5.2, 5.3
 
-- [ ] 6.1 Implement GPU metrics polling: query gpu_memory_total, gpu_memory_used, gpu_memory_free, gpu_utilization at configurable interval
-- [ ] 6.2 Implement tracking of active_requests, shard_memory_mb, and activation_memory_mb
-- [ ] 6.3 Store user-configured gpu_memory_limit_mb and implement limit comparison on each poll
-- [ ] 6.4 Implement heartbeat snapshot: return current gpu_utilization, memory_used_mb, active_requests
-- [ ] 6.5 Implement memory limit alert: generate warning when gpu_memory_used_mb exceeds gpu_memory_limit_mb
+- [x] 6.1 Implement GPU metrics polling: query gpu_memory_total, gpu_memory_used, gpu_memory_free, gpu_utilization at configurable interval
+- [x] 6.2 Implement tracking of active_requests, shard_memory_mb, and activation_memory_mb
+- [x] 6.3 Store user-configured gpu_memory_limit_mb and implement limit comparison on each poll
+- [x] 6.4 Implement heartbeat snapshot: return current gpu_utilization, memory_used_mb, active_requests
+- [x] 6.5 Implement memory limit alert: generate warning when gpu_memory_used_mb exceeds gpu_memory_limit_mb
 - [ ] 6.6 ~~Write unit tests for metric tracking, snapshot accuracy, and limit alerting~~ **SKIPPED - Focus on implementation only**
 
 ## Task 7: Layer Assignment Registry
 > Requirements: 6.1, 6.2
 
-- [ ] 7.1 Define registry data structure: node_id, model_id, model_url (HTTP URL to safetensors file), layer_start, layer_end, dtype, is_final_node, downstream_node, upstream_nodes
-- [ ] 7.2 Implement assignment storage: set assignment on AcceptLayerAssignment from Coordinator
-- [ ] 7.3 Implement query methods for other sub-components to read assignment details (downstream address, layer range, dtype, is_final)
-- [ ] 7.4 ~~Write unit tests for assignment storage and query~~ **SKIPPED - Focus on implementation only**
+- [x] 7.1 Define registry data structure: node_id, model_id, model_url (HTTP URL to safetensors file), layer_start, layer_end, dtype, is_final_node, downstream_node, upstream_nodes
+- [~] 7.2 Implement assignment storage: set assignment on AcceptLayerAssignment from Coordinator
+- [~] 7.3 Implement query methods for other sub-components to read assignment details (downstream address, layer range, dtype, is_final)
+- [~] 7.4 ~~Write unit tests for assignment storage and query~~ **SKIPPED - Focus on implementation only**
 
 ## Task 8: Worker Node Lifecycle — Startup & Registration
 > Requirements: 7.1, 7.2
 
-- [ ] 8.1 Implement node startup: initialize Resource Monitor, query local GPU resources, generate node_id
-- [ ] 8.2 Implement Coordinator registration: send Register RPC with node_id, address, grpc_address, capacity (including user memory_limit)
-- [ ] 8.3 Implement AcceptLayerAssignment handler: receive assignment (including model_url for safetensors file), store in registry, trigger Shard Manager LoadShard with model_url for selective download
-- [ ] 8.4 Implement ConfirmReady: after shard load + validation, send ConfirmReady RPC to Coordinator
-- [ ] 8.5 Implement state transitions: Initializing → Registering → WaitingAssignment → LoadingShard → Validating → Ready
+- [~] 8.1 Implement node startup: initialize Resource Monitor, query local GPU resources, generate node_id
+- [~] 8.2 Implement Coordinator registration: send Register RPC with node_id, address, grpc_address, capacity (including user memory_limit)
+- [~] 8.3 Implement AcceptLayerAssignment handler: receive assignment (including model_url for safetensors file), store in registry, trigger Shard Manager LoadShard with model_url for selective download
+- [~] 8.4 Implement ConfirmReady: after shard load + validation, send ConfirmReady RPC to Coordinator
+- [~] 8.5 Implement state transitions: Initializing → Registering → WaitingAssignment → LoadingShard → Validating → Ready
 
 ## Task 9: Worker Node Lifecycle — Serving & Request Processing
 > Requirements: 7.3, 7.5
 
-- [ ] 9.1 Implement the main serving loop: accept TCP connections, read Forward messages, process, and forward results
-- [ ] 9.2 Wire together Message Handler → Layer Engine → Connection Pool for the forward pipeline
-- [ ] 9.3 Implement periodic heartbeat sending to Coordinator with Resource Monitor snapshots
-- [ ] 9.4 Implement downstream failure handling: detect TCP send failure, call ReportFailure on Coordinator, receive RerouteInfo, retry to backup node
-- [ ] 9.5 Implement error response: if backup also fails, send ERROR message back upstream
+- [~] 9.1 Implement the main serving loop: accept TCP connections, read Forward messages, process, and forward results
+- [~] 9.2 Wire together Message Handler → Layer Engine → Connection Pool for the forward pipeline
+- [~] 9.3 Implement periodic heartbeat sending to Coordinator with Resource Monitor snapshots
+- [~] 9.4 Implement downstream failure handling: detect TCP send failure, call ReportFailure on Coordinator, receive RerouteInfo, retry to backup node
+- [~] 9.5 Implement error response: if backup also fails, send ERROR message back upstream
 - [ ] 9.6 ~~Write integration test: two-node pipeline with Forward message flowing through~~ **SKIPPED - Focus on implementation only**
 
 ## Task 10: Worker Node Lifecycle — Graceful Shutdown
