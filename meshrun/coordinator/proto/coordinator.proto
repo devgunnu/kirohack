@@ -1,0 +1,240 @@
+syntax = "proto3";
+
+package meshrun.coordinator;
+
+option java_multiple_files = true;
+
+// ── Enumerations ────────────────────────────────────────────────────────────
+
+// Registration outcome status.
+enum RegistrationStatus {
+  REGISTRATION_STATUS_UNSPECIFIED = 0;
+  REGISTRATION_STATUS_OK = 1;
+  REGISTRATION_STATUS_REJECTED = 2;
+  REGISTRATION_STATUS_ERROR = 3;
+}
+
+// Tensor data type (mirrors worker/protocol.py DType enum).
+enum DType {
+  DTYPE_UNSPECIFIED = 0;
+  DTYPE_FP16 = 1;
+  DTYPE_INT8 = 2;
+}
+
+// ── Shared Messages ─────────────────────────────────────────────────────────
+
+// GPU capacity descriptor included in registration.
+message Capacity {
+  int32 gpu_memory_total_mb = 1;
+  int32 gpu_memory_free_mb = 2;
+  int32 memory_limit_mb = 3;
+  float gpu_utilization = 4;
+}
+
+// A single node in an execution route.
+message RouteNode {
+  string node_id = 1;
+  string address = 2;   // TCP host:port for data plane
+  int32 layer_start = 3;
+  int32 layer_end = 4;
+}
+
+// Backup routing information for a failed node.
+message RerouteInfo {
+  string backup_addr = 1;  // TCP host:port of backup, empty if none
+  string message = 2;
+}
+
+// Backup map entry: maps a node_id to its backup address.
+message BackupMapEntry {
+  string node_id = 1;
+  string backup_address = 2;
+}
+
+// ── Register ────────────────────────────────────────────────────────────────
+
+message RegisterRequest {
+  string node_id = 1;
+  string address = 2;        // TCP host:port for data plane
+  string grpc_address = 3;   // gRPC host:port for control plane callbacks
+  Capacity capacity = 4;
+  // Optional: layers already loaded (0,0 means none).
+  int32 layers_hosted_start = 5;
+  int32 layers_hosted_end = 6;
+}
+
+message RegisterResponse {
+  RegistrationStatus status = 1;
+  string message = 2;
+}
+
+// ── Heartbeat ───────────────────────────────────────────────────────────────
+
+message HeartbeatRequest {
+  string node_id = 1;
+  float gpu_utilization = 2;
+  int32 memory_used_mb = 3;
+  int32 active_requests = 4;
+}
+
+message HeartbeatResponse {
+  bool acknowledged = 1;
+  string message = 2;
+}
+
+// ── ConfirmReady ────────────────────────────────────────────────────────────
+
+message ConfirmReadyRequest {
+  string node_id = 1;
+  int32 layer_start = 2;
+  int32 layer_end = 3;
+}
+
+message ConfirmReadyResponse {
+  bool acknowledged = 1;
+  string message = 2;
+}
+
+// ── Deregister ──────────────────────────────────────────────────────────────
+
+message DeregisterRequest {
+  string node_id = 1;
+}
+
+message DeregisterResponse {
+  bool acknowledged = 1;
+  string message = 2;
+}
+
+// ── RequestRoute ────────────────────────────────────────────────────────────
+
+message RequestRouteRequest {
+  string model_id = 1;
+  string client_id = 2;
+  float priority_token = 3;  // compute_contributed for priority scoring
+}
+
+message RequestRouteResponse {
+  int64 request_id = 1;
+  bytes session_key = 2;              // 32-byte AES-256 key
+  repeated RouteNode nodes = 3;       // ordered pipeline nodes
+  repeated BackupMapEntry backup_map = 4;
+}
+
+// ── ReportFailure ───────────────────────────────────────────────────────────
+
+message ReportFailureRequest {
+  int64 request_id = 1;
+  string failed_node_id = 2;
+  string reporting_node_id = 3;
+}
+
+message ReportFailureResponse {
+  bool acknowledged = 1;
+  RerouteInfo reroute = 2;
+  string message = 3;
+}
+
+// ── AcceptLayerAssignment (Coordinator → Worker push) ───────────────────────
+
+message AcceptLayerAssignmentRequest {
+  string node_id = 1;
+  string model_id = 2;
+  string model_url = 3;
+  int32 layer_start = 4;
+  int32 layer_end = 5;
+  DType dtype = 6;
+  bool is_final_node = 7;
+  string downstream_addr = 8;          // TCP host:port of next node
+  repeated string upstream_addrs = 9;  // TCP host:port(s) of upstream nodes
+  bytes session_key = 10;              // 32-byte AES-256 key
+}
+
+message AcceptLayerAssignmentResponse {
+  bool acknowledged = 1;
+  string message = 2;
+}
+
+// ── TriggerAssignment (Admin → Coordinator) ─────────────────────────────────
+
+message TriggerAssignmentRequest {
+  string model_id = 1;
+  int32 total_layers = 2;
+  DType dtype = 3;
+  string model_url = 4;
+}
+
+message TriggerAssignmentResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ── GetNetworkStatus (CLI/Dashboard → Coordinator) ──────────────────────────
+
+message GetNetworkStatusRequest {
+  // Empty for now, can add filters later
+}
+
+message GetNetworkStatusResponse {
+  int32 active_nodes = 1;
+  int32 total_layers = 2;
+  int32 covered_layers = 3;
+  string model_id = 4;
+  int32 queue_depth = 5;
+  repeated NodeInfo nodes = 6;
+  repeated QueueEntry queue = 7;
+}
+
+message NodeInfo {
+  string node_id = 1;
+  string address = 2;
+  string grpc_address = 3;
+  int32 layer_start = 4;
+  int32 layer_end = 5;
+  string status = 6;  // "active", "idle", "unhealthy"
+  float gpu_utilization = 7;
+  int64 memory_used_mb = 8;
+  int64 memory_total_mb = 9;
+  int32 requests_served = 10;
+  float credits_earned = 11;
+  int64 last_heartbeat_ms = 12;
+}
+
+message QueueEntry {
+  string job_id = 1;
+  string prompt_preview = 2;
+  float priority_score = 3;
+  int64 submit_time_ms = 4;
+  int32 position = 5;
+}
+
+// ── Service Definition ──────────────────────────────────────────────────────
+
+service CoordinatorService {
+  // Worker node self-registers with capacity info.
+  rpc Register (RegisterRequest) returns (RegisterResponse);
+
+  // Periodic health signal from worker node.
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Worker signals shard loaded and ready to serve.
+  rpc ConfirmReady (ConfirmReadyRequest) returns (ConfirmReadyResponse);
+
+  // Worker node graceful removal.
+  rpc Deregister (DeregisterRequest) returns (DeregisterResponse);
+
+  // Client requests execution path + session key.
+  rpc RequestRoute (RequestRouteRequest) returns (RequestRouteResponse);
+
+  // Worker reports downstream node failure.
+  rpc ReportFailure (ReportFailureRequest) returns (ReportFailureResponse);
+
+  // Admin triggers layer assignment computation.
+  rpc TriggerAssignment (TriggerAssignmentRequest) returns (TriggerAssignmentResponse);
+
+  // Coordinator pushes assignment to worker (via worker's gRPC address).
+  rpc AcceptLayerAssignment (AcceptLayerAssignmentRequest) returns (AcceptLayerAssignmentResponse);
+
+  // Get full network status (for CLI and dashboard).
+  rpc GetNetworkStatus (GetNetworkStatusRequest) returns (GetNetworkStatusResponse);
+}

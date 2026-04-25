@@ -45,6 +45,9 @@ python -m pytest meshrun/ -v
 # Run specific test file
 python -m pytest meshrun/worker/test_protocol.py -v
 
+# Run secure protocol tests
+python -m pytest meshrun/worker/test_secure_protocol.py -v
+
 # Run with coverage
 python -m pytest meshrun/ --cov=meshrun --cov-report=html -v
 ```
@@ -55,6 +58,7 @@ python -m pytest meshrun/ --cov=meshrun --cov-report=html -v
 - Group tests into classes by concern (e.g., `TestValidateAccepts`, `TestRoundTrip`)
 - Use `pytest.raises` with `match=` for error message assertions
 - Mock sockets with `unittest.mock.MagicMock` for TCP tests
+- Use `StubCoordinatorClient` for testing worker nodes without a live Coordinator
 
 ### Property-Based Testing
 
@@ -86,11 +90,33 @@ python -m pytest meshrun/ -v --hypothesis-max-examples=500
 
 ```
 meshrun/
+  client/
+    client.py                # End-to-end inference orchestration
+    tokenizer.py             # HuggingFace tokenizer + embedding engine
+    transport.py             # Encrypted TCP transport (AES-256-GCM)
+  coordinator/
+    server.py                # gRPC server and servicer implementation
+    registry.py              # Node registry and health tracker
+    scheduler.py             # Layer assignment, route building, priority queue
+    key_manager.py           # AES-256 session key lifecycle
+    proto/                   # Protobuf definitions and generated stubs
+      coordinator.proto      # gRPC service definition
+      coordinator_pb2.py     # Generated protobuf messages
+      coordinator_pb2_grpc.py # Generated gRPC stubs
   worker/
-    protocol.py           # TCP binary protocol (header, framing, tensor serialization)
-    connection_pool.py     # Persistent TCP connection management
-    shard_manager.py       # Safetensors selective download, GPU loading, caching
-    test_protocol.py       # Tests for protocol.py
+    protocol.py              # TCP binary protocol + AES-256-GCM encryption
+    connection_pool.py       # Persistent TCP connection management
+    shard_manager.py         # Safetensors selective download, GPU loading
+    layer_engine.py          # Forward pass execution
+    resource_monitor.py      # GPU memory/utilization tracking
+    layer_registry.py        # Layer assignment storage
+    coordinator_client.py    # gRPC client for Coordinator communication
+    node.py                  # Worker node lifecycle orchestration
+    serving.py               # Encrypted request processing pipeline
+    test_protocol.py         # Tests for protocol.py
+    test_secure_protocol.py  # Tests for secure protocol (AES-GCM)
+  security/
+    crypto.py                # Standalone AES-256-GCM encryption helpers
 ```
 
 ## Binary Protocol Rules
@@ -110,3 +136,29 @@ meshrun/
 - Blocking I/O is acceptable for POC scope
 - Failure handling: single retry to backup node, then fail-fast
 - Resource monitoring is observe-only; memory limits are user-configured
+- Session keys for encryption are distributed via the gRPC control plane
+- All data plane messages use `read_message_secure` / `write_message_secure`
+
+## gRPC Proto Development
+
+The proto file is at `meshrun/coordinator/proto/coordinator.proto`. After modifying it, regenerate stubs:
+
+```powershell
+python -m grpc_tools.protoc `
+  -I meshrun/coordinator/proto `
+  --python_out=meshrun/coordinator/proto `
+  --grpc_python_out=meshrun/coordinator/proto `
+  meshrun/coordinator/proto/coordinator.proto
+```
+
+The generated files (`coordinator_pb2.py`, `coordinator_pb2_grpc.py`) are used by both the Coordinator server and the Worker Node's `GrpcCoordinatorClient`.
+
+## Adding New Components
+
+1. Create a new file under the appropriate package (`meshrun/worker/`, `meshrun/coordinator/`, or `meshrun/client/`)
+2. Follow existing patterns: `dataclass(frozen=True, slots=True)` for value types, `IntEnum` for enums
+3. Add type hints to all function signatures
+4. Write docstrings on all public classes and functions
+5. Create a corresponding test file alongside the source (e.g., `test_mycomponent.py`)
+6. Update the relevant doc file in `docs/`
+7. Update `docs/api-reference.md` with the public interface

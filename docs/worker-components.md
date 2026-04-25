@@ -1,6 +1,6 @@
 # Worker Node Components
 
-All worker node sub-components live under `meshrun/worker/`.
+All worker node sub-components live under `meshrun/worker/`. For the node lifecycle orchestration (startup, registration, serving), see [Worker Node Lifecycle](worker-lifecycle.md).
 
 ## Connection Pool
 
@@ -34,7 +34,6 @@ sock = pool.get_connection(("192.168.1.10", 9000))
 
 # Check if connected
 if pool.is_connected(("192.168.1.10", 9000)):
-    # Connection is live
     pass
 
 # Start accepting incoming connections
@@ -69,7 +68,7 @@ Source: `meshrun/worker/shard_manager.py`
 
 Manages the lifecycle of quantized model shards — selectively downloading only assigned layer weights from a safetensors model file via HTTP Range requests, caching locally, loading to GPU, validating, and unloading.
 
-### Key Classes and Functions
+### Key Classes
 
 - `ShardMetadata` — Mutable state tracking model_id, layer range, dtype, load status, loaded tensors
 - `ShardInfo` — Immutable snapshot for external consumers
@@ -132,56 +131,177 @@ assert metadata.load_status == LoadStatus.UNLOADED
 
 ---
 
-## Layer Engine (Not Yet Implemented)
+## Layer Engine
 
-Will be located at: `meshrun/worker/layer_engine.py`
+Source: `meshrun/worker/layer_engine.py`
 
-Executes sequential forward passes through hosted transformer layers.
+Executes sequential forward passes through hosted transformer layers. Supports both intermediate hidden state output and final logits output (when the node hosts the last layers).
 
-### Planned Interface
+### Key Classes
 
-| Method    | Input                  | Output                    | Description                                       |
-| --------- | ---------------------- | ------------------------- | ------------------------------------------------- |
-| `Forward` | hidden_states, step_id | hidden_states (or logits) | Sequential forward pass through all hosted layers |
-| `WarmUp`  | dummy tensor           | —                         | Pre-allocate GPU kernels and activation memory    |
+- `TransformerLayer` — Holds weight tensors for a single transformer layer (attention Q/K/V/O projections, MLP gate/up/down projections, RMSNorm weights)
+- `LayerEngine` — Stateful engine holding an ordered list of transformer layers, optional LM head, and configuration
+
+### Core Functions
+
+| Function                                     | Description                                                               |
+| -------------------------------------------- | ------------------------------------------------------------------------- |
+| `build_layer_engine(loaded_tensors, ...)`    | Construct a LayerEngine from loaded shard tensors (groups by layer index) |
+| `forward(engine, hidden_states, step_id)`    | Sequential forward pass through all hosted layers, returns output tensor  |
+| `warm_up(engine, hidden_dim, device, dtype)` | Run dummy forward pass to pre-allocate GPU kernels and activation memory  |
+
+### Forward Pass Details
+
+- Layers are executed sequentially in order (layer_start through layer_end)
+- Each layer applies: RMSNorm → Attention → Residual → RMSNorm → MLP → Residual
+- If `is_final_node` is true, applies a final RMSNorm + LM head linear projection to produce logits
+- Output is validated for NaN/Inf values
+
+### Usage
+
+```python
+from meshrun.worker.layer_engine import build_layer_engine, forward, warm_up
+
+# Build engine from loaded shard tensors
+engine = build_layer_engine(
+    loaded_tensors=shard_metadata.loaded_tensors,
+    layer_start=5,
+    layer_end=9,
+    is_final_node=False,
+    device="cuda",
+)
+
+# Warm up GPU kernels
+warm_up(engine, hidden_dim=4096, device="cuda", dtype="float16")
+
+# Run forward pass
+output = forward(engine, hidden_states_tensor, step_id=0)
+```
 
 ---
 
-## Resource Monitor (Not Yet Implemented)
+## Resource Monitor
 
-Will be located at: `meshrun/worker/resource_monitor.py`
+Source: `meshrun/worker/resource_monitor.py`
 
-Tracks GPU memory, compute utilization, and active request count.
+Tracks GPU memory, compute utilization, and active request count. Provides heartbeat snapshots and memory limit alerting. Memory limits are user-configured — the monitor observes only, it does not adjust allocations.
 
-### Planned Metrics
+### Key Classes
 
-| Metric              | Type    | Description                       |
-| ------------------- | ------- | --------------------------------- |
-| gpu_memory_total_mb | uint32  | Total GPU memory                  |
-| gpu_memory_used_mb  | uint32  | Current GPU memory in use         |
-| gpu_memory_free_mb  | uint32  | Remaining GPU memory              |
-| gpu_memory_limit_mb | uint32  | User-configured memory limit      |
-| gpu_utilization     | float32 | GPU compute utilization (0.0-1.0) |
-| active_requests     | uint16  | In-flight forward passes          |
+- `GpuMetrics` — Immutable snapshot of GPU state (total/used/free memory, utilization)
+- `HeartbeatSnapshot` — Subset of metrics for inclusion in heartbeat messages
+- `ResourceMonitor` — Stateful monitor with background polling thread
+
+### Metrics Tracked
+
+| Metric                 | Type  | Description                                |
+| ---------------------- | ----- | ------------------------------------------ |
+| `gpu_memory_total_mb`  | int   | Total GPU memory available                 |
+| `gpu_memory_used_mb`   | int   | Current GPU memory in use                  |
+| `gpu_memory_free_mb`   | int   | Remaining GPU memory                       |
+| `gpu_memory_limit_mb`  | int   | User-configured memory limit               |
+| `gpu_utilization`      | float | GPU compute utilization (0.0-1.0)          |
+| `active_requests`      | int   | Number of in-flight forward passes         |
+| `shard_memory_mb`      | int   | Memory consumed by loaded model shard      |
+| `activation_memory_mb` | int   | Estimated memory for in-flight activations |
+
+### Usage
+
+```python
+from meshrun.worker.resource_monitor import ResourceMonitor
+
+monitor = ResourceMonitor(
+    gpu_memory_limit_mb=6000,
+    poll_interval_s=1.0,
+    device_index=0,
+)
+
+# Start background polling
+monitor.start()
+
+# Get current metrics
+metrics = monitor.get_latest_metrics()
+print(f"GPU used: {metrics.gpu_memory_used_mb} MB")
+
+# Get heartbeat snapshot
+snapshot = monitor.get_heartbeat_snapshot()
+
+# Track active requests
+monitor.increment_active_requests()
+monitor.decrement_active_requests()
+
+# Check memory limit
+if monitor.is_over_limit():
+    print("Warning: GPU memory exceeds configured limit")
+
+# Stop polling
+monitor.stop()
+```
 
 ---
 
-## Layer Assignment Registry (Not Yet Implemented)
+## Layer Assignment Registry
 
-Will be located at: `meshrun/worker/layer_registry.py`
+Source: `meshrun/worker/layer_registry.py`
 
-Stores the current layer assignment and provides pipeline topology information.
+Thread-safe registry that stores the current layer assignment for a worker node. Provides query methods for other sub-components to look up pipeline topology, layer ranges, and downstream/upstream addresses.
 
-### Planned Fields
+### Key Classes
 
-| Field           | Type               | Description                               |
-| --------------- | ------------------ | ----------------------------------------- |
-| node_id         | string (UUID)      | This node's identifier                    |
-| model_id        | string             | Model being served                        |
-| model_url       | string (URL)       | HTTP URL to safetensors file              |
-| layer_start     | uint16             | First assigned layer (inclusive)          |
-| layer_end       | uint16             | Last assigned layer (inclusive)           |
-| dtype           | enum               | fp16 or int8                              |
-| is_final_node   | bool               | Whether this node hosts the last layers   |
-| downstream_node | string (host:port) | Next node in pipeline (null if final)     |
-| upstream_nodes  | list of string     | Addresses that may send data to this node |
+- `AssignmentDType` — Quantization format enum: FP16 or INT8
+- `LayerAssignment` — Immutable snapshot of a layer assignment (node_id, model_id, model_url, layer range, dtype, topology)
+- `LayerAssignmentRegistry` — Thread-safe registry storing exactly one assignment at a time
+
+### LayerAssignment Fields
+
+| Field           | Type            | Description                               |
+| --------------- | --------------- | ----------------------------------------- |
+| node_id         | str (UUID)      | This node's identifier                    |
+| model_id        | str             | Model being served                        |
+| model_url       | str (URL)       | HTTP URL to safetensors file              |
+| layer_start     | int             | First assigned layer (inclusive)          |
+| layer_end       | int             | Last assigned layer (inclusive)           |
+| dtype           | AssignmentDType | fp16 or int8                              |
+| is_final_node   | bool            | Whether this node hosts the last layers   |
+| downstream_node | Optional[str]   | Next node `host:port` (None if final)     |
+| upstream_nodes  | tuple[str, ...] | Addresses that may send data to this node |
+
+### Validation Rules
+
+- `node_id`, `model_id`, `model_url` must be non-empty
+- `layer_start` >= 0, `layer_end` >= `layer_start`
+- `dtype` must be a valid `AssignmentDType`
+- If `is_final_node` is True, `downstream_node` must be None
+- If `is_final_node` is False, `downstream_node` is required
+
+### Usage
+
+```python
+from meshrun.worker.layer_registry import (
+    LayerAssignmentRegistry, LayerAssignment, AssignmentDType,
+)
+
+registry = LayerAssignmentRegistry()
+
+# Store assignment from Coordinator
+assignment = LayerAssignment(
+    node_id="node-abc-123",
+    model_id="llama-3b",
+    model_url="https://example.com/model.safetensors",
+    layer_start=5,
+    layer_end=9,
+    dtype=AssignmentDType.FP16,
+    is_final_node=False,
+    downstream_node="192.168.1.11:9000",
+    upstream_nodes=("192.168.1.9:9000",),
+)
+registry.accept_layer_assignment(assignment)
+
+# Query from other components
+downstream = registry.get_downstream_address()  # "192.168.1.11:9000"
+layer_range = registry.get_layer_range()         # (5, 9)
+is_final = registry.is_final_node()              # False
+
+# Clear on shutdown
+registry.clear()
+```

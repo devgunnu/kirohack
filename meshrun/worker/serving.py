@@ -27,7 +27,9 @@ from meshrun.worker.protocol import (
     Header,
     MessageType,
     read_message,
+    read_message_secure,
     write_message,
+    write_message_secure,
 )
 from meshrun.worker.resource_monitor import ResourceMonitor
 
@@ -57,10 +59,16 @@ class ServingConfig:
         Bind address for the TCP listener.
     listen_port:
         TCP port for the data plane listener.
+    session_key:
+        Optional AES-256 session key (32 bytes) for encrypted data plane
+        traffic.  When provided, the serving loop uses
+        ``read_message_secure`` / ``write_message_secure`` instead of the
+        plaintext variants.
     """
 
     listen_host: str = "0.0.0.0"
     listen_port: int = 9100
+    session_key: Optional[bytes] = None
 
 
 @dataclass(slots=True)
@@ -222,6 +230,7 @@ def _send_error_upstream(
     client_sock: socket.socket,
     request_id: int,
     step_id: int,
+    session_key: Optional[bytes] = None,
 ) -> None:
     """Send an ERROR message back to the upstream node / client.
 
@@ -236,12 +245,21 @@ def _send_error_upstream(
         The original request ID.
     step_id:
         The original step ID.
+    session_key:
+        Optional AES-256 session key. When provided, the message is
+        sent encrypted via ``write_message_secure``; otherwise falls
+        back to plaintext ``write_message``.
     """
     error_header = _build_error_header(request_id, step_id)
     # Minimal payload: a single zero-valued fp16 element.
     error_payload: list[float] = [0.0]
     try:
-        write_message(client_sock, error_header, error_payload)
+        if session_key is not None:
+            write_message_secure(
+                client_sock, error_header, error_payload, session_key
+            )
+        else:
+            write_message(client_sock, error_header, error_payload)
         logger.info(
             "Sent ERROR response upstream for request_id=%d", request_id
         )
@@ -262,6 +280,7 @@ def _send_downstream(
     connection_pool: ConnectionPool,
     coordinator_client: Optional[CoordinatorClient],
     node_id: Optional[str],
+    session_key: Optional[bytes] = None,
 ) -> bool:
     """Attempt to send to downstream, with failure reporting and backup retry.
 
@@ -288,7 +307,7 @@ def _send_downstream(
         # Fall through to failure reporting below.
     else:
         try:
-            write_message(downstream_sock, response_header, output_list)
+            write_message_secure(downstream_sock, response_header, output_list, session_key)
             logger.debug(
                 "Forwarded request_id=%d to downstream %s",
                 request_id,
@@ -370,7 +389,7 @@ def _send_downstream(
         return False
 
     try:
-        write_message(backup_sock, response_header, output_list)
+        write_message_secure(backup_sock, response_header, output_list, session_key)
         logger.info(
             "Successfully rerouted request_id=%d to backup %s",
             request_id,
@@ -406,6 +425,7 @@ def _handle_connection(
     stats: ServingStats,
     shutdown_event: threading.Event,
     device: str = "cuda:0",
+    session_key: Optional[bytes] = None,
 ) -> None:
     """Process messages from a single upstream connection until it closes.
 
@@ -441,6 +461,11 @@ def _handle_connection(
         Event that is set when the node is shutting down.
     device:
         Torch device string for tensor reconstruction.
+    session_key:
+        Optional 32-byte AES-256 session key.  When provided, all
+        reads use ``read_message_secure`` and all writes use
+        ``write_message_secure``.  When ``None``, plaintext
+        ``read_message`` / ``write_message`` are used.
     """
     # Import forward here to avoid circular imports at module level.
     from meshrun.worker.layer_engine import forward
@@ -459,7 +484,10 @@ def _handle_connection(
     while not shutdown_event.is_set():
         try:
             # ── 1. Read incoming Forward message ────────────────────────
-            header, tensor_data = read_message(client_sock)
+            if session_key is not None:
+                header, tensor_data = read_message_secure(client_sock, session_key)
+            else:
+                header, tensor_data = read_message(client_sock)
 
             if header.message_type != int(MessageType.FORWARD):
                 logger.warning(
@@ -504,7 +532,10 @@ def _handle_connection(
 
                 if is_final:
                     # Final node: send RESULT back on the same connection.
-                    write_message(client_sock, response_header, output_list)
+                    if session_key is not None:
+                        write_message_secure(client_sock, response_header, output_list, session_key)
+                    else:
+                        write_message(client_sock, response_header, output_list)
                     logger.debug(
                         "Sent RESULT for request_id=%d back to client",
                         header.request_id,
@@ -529,6 +560,7 @@ def _handle_connection(
                         connection_pool=connection_pool,
                         coordinator_client=coordinator_client,
                         node_id=node_id,
+                        session_key=session_key,
                     )
                     if not sent:
                         # Both primary and backup failed — send ERROR
@@ -538,6 +570,7 @@ def _handle_connection(
                             client_sock,
                             header.request_id,
                             header.step_id,
+                            session_key=session_key,
                         )
                         stats.record_failure()
                         continue
@@ -630,6 +663,7 @@ class ServingLoop:
         coordinator_client: Optional[CoordinatorClient] = None,
         config: Optional[ServingConfig] = None,
         device: str = "cuda:0",
+        session_key: Optional[bytes] = None,
     ) -> None:
         self._engine = layer_engine
         self._registry = layer_registry
@@ -638,6 +672,8 @@ class ServingLoop:
         self._coordinator_client = coordinator_client
         self._config = config or ServingConfig()
         self._device = device
+        # Explicit session_key parameter takes precedence; fall back to config.
+        self._session_key = session_key if session_key is not None else self._config.session_key
 
         self._shutdown_event = threading.Event()
         self._stats = ServingStats()
@@ -737,4 +773,5 @@ class ServingLoop:
             stats=self._stats,
             shutdown_event=self._shutdown_event,
             device=self._device,
+            session_key=self._session_key,
         )
