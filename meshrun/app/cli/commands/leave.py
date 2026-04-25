@@ -10,6 +10,9 @@ app = typer.Typer(help="Deregister this machine from the mesh network.")
 
 @app.callback(invoke_without_command=True)
 def leave():
+    from app.state import require_joined
+    require_joined()
+
     confirmed = typer.confirm("Deregister this node from the mesh? In-flight requests will be drained first.")
     if not confirmed:
         print_info("Cancelled.")

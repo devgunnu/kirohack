@@ -11,6 +11,9 @@ app = typer.Typer(help="List all nodes in the mesh network.")
 
 @app.callback(invoke_without_command=True)
 def nodes():
+    from app.state import require_joined
+    require_joined()
+
     with spinner_connecting():
         get_network_status()
     print_success("Fetched node list.")

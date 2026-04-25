@@ -22,6 +22,9 @@ def submit(
     async_mode: bool = typer.Option(False, "--async", "-a", help="Submit job async and return a job ID immediately."),
     job_id: Optional[str] = typer.Option(None, "--job-id", "-j", help="Retrieve result of a previously submitted async job."),
 ):
+    from app.state import require_joined
+    require_joined()
+
     # Retrieve existing async job
     if job_id:
         with spinner_routing():
@@ -46,14 +49,29 @@ def submit(
         print_info(f"Retrieve result with: [bold]meshrun submit --job-id {result['job_id']}[/bold]")
         return
 
-    # Synchronous submission with live streaming simulation
+    # Synchronous submission
     with spinner_routing():
         result = submit_inference_job(prompt, priority)
 
+    # ── Hop visualization ────────────────────────────────────────
     console.print()
-    console.print("[bold]Output:[/bold]")
+    console.rule("[dim]Inference Pipeline[/dim]")
+    console.print()
 
-    # Simulate token streaming with Rich Live
+    hops = result["hop_latencies"]
+    nodes = list(hops.keys())
+    latencies = list(hops.values())
+
+    # Animate hops one by one
+    for i, (node, latency) in enumerate(zip(nodes, latencies)):
+        console.print(f"  [dim]→[/dim] [cyan]{node}[/cyan] [dim](layers {['0-6','7-13','14-20'][i] if i < 3 else ''})[/dim]  [green]{int(latency*1000)}ms[/green]")
+        time.sleep(latency * 0.8)
+
+    console.print()
+    console.rule("[dim]Output[/dim]")
+    console.print()
+
+    # Token streaming
     words = result["output"].split()
     displayed = Text()
     with Live(displayed, console=console, refresh_per_second=12) as live:
@@ -62,6 +80,8 @@ def submit(
             live.update(displayed)
             time.sleep(0.05)
 
+    console.print()
+    console.rule("[dim]Summary[/dim]")
     console.print()
     print_success("Inference complete.")
     show_submit_result(result["job_id"], prompt[:60])

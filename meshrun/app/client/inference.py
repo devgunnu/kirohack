@@ -130,3 +130,10 @@ def detect_local_hardware() -> dict:
         "suggested_layers": "0-6",
         "can_run_model": True,
     }
+
+
+def get_earning_rate(compute_pct: int, vram_gb: float) -> float:
+    """Calculate credits earned per forward pass based on compute allocation."""
+    # TODO: replace with real coordinator formula
+    base = 1.2
+    return round(base * (compute_pct / 25), 1)

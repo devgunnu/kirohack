@@ -13,6 +13,9 @@ app = typer.Typer(help="Show your credit balance and history.")
 
 @app.callback(invoke_without_command=True)
 def credits():
+    from app.state import require_joined
+    require_joined()
+
     with spinner_loading():
         data = get_credits("local-node")
     print_success("Credits loaded.")
