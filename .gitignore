@@ -46,3 +46,6 @@ logs/
 
 .*_cache
 *.py[cod]
+
+.kiro/steering
+.kiro/specs/*/tasks.md
