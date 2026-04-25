@@ -78,27 +78,27 @@ The Shard Manager uses the safetensors format with HTTP Range requests to select
 > Requirements: 6.1, 6.2
 
 - [x] 7.1 Define registry data structure: node_id, model_id, model_url (HTTP URL to safetensors file), layer_start, layer_end, dtype, is_final_node, downstream_node, upstream_nodes
-- [-] 7.2 Implement assignment storage: set assignment on AcceptLayerAssignment from Coordinator
-- [~] 7.3 Implement query methods for other sub-components to read assignment details (downstream address, layer range, dtype, is_final)
-- [~] 7.4 ~~Write unit tests for assignment storage and query~~ **SKIPPED - Focus on implementation only**
+- [x] 7.2 Implement assignment storage: set assignment on AcceptLayerAssignment from Coordinator
+- [x] 7.3 Implement query methods for other sub-components to read assignment details (downstream address, layer range, dtype, is_final)
+- [x] 7.4 ~~Write unit tests for assignment storage and query~~ **SKIPPED - Focus on implementation only**
 
 ## Task 8: Worker Node Lifecycle — Startup & Registration
 > Requirements: 7.1, 7.2
 
-- [~] 8.1 Implement node startup: initialize Resource Monitor, query local GPU resources, generate node_id
-- [~] 8.2 Implement Coordinator registration: send Register RPC with node_id, address, grpc_address, capacity (including user memory_limit)
-- [~] 8.3 Implement AcceptLayerAssignment handler: receive assignment (including model_url for safetensors file), store in registry, trigger Shard Manager LoadShard with model_url for selective download
-- [~] 8.4 Implement ConfirmReady: after shard load + validation, send ConfirmReady RPC to Coordinator
-- [~] 8.5 Implement state transitions: Initializing → Registering → WaitingAssignment → LoadingShard → Validating → Ready
+- [x] 8.1 Implement node startup: initialize Resource Monitor, query local GPU resources, generate node_id
+- [x] 8.2 Implement Coordinator registration: send Register RPC with node_id, address, grpc_address, capacity (including user memory_limit)
+- [x] 8.3 Implement AcceptLayerAssignment handler: receive assignment (including model_url for safetensors file), store in registry, trigger Shard Manager LoadShard with model_url for selective download
+- [x] 8.4 Implement ConfirmReady: after shard load + validation, send ConfirmReady RPC to Coordinator
+- [x] 8.5 Implement state transitions: Initializing → Registering → WaitingAssignment → LoadingShard → Validating → Ready
 
 ## Task 9: Worker Node Lifecycle — Serving & Request Processing
 > Requirements: 7.3, 7.5
 
-- [~] 9.1 Implement the main serving loop: accept TCP connections, read Forward messages, process, and forward results
-- [~] 9.2 Wire together Message Handler → Layer Engine → Connection Pool for the forward pipeline
-- [~] 9.3 Implement periodic heartbeat sending to Coordinator with Resource Monitor snapshots
-- [~] 9.4 Implement downstream failure handling: detect TCP send failure, call ReportFailure on Coordinator, receive RerouteInfo, retry to backup node
-- [~] 9.5 Implement error response: if backup also fails, send ERROR message back upstream
+- [x] 9.1 Implement the main serving loop: accept TCP connections, read Forward messages, process, and forward results
+- [x] 9.2 Wire together Message Handler → Layer Engine → Connection Pool for the forward pipeline
+- [x] 9.3 Implement periodic heartbeat sending to Coordinator with Resource Monitor snapshots
+- [x] 9.4 Implement downstream failure handling: detect TCP send failure, call ReportFailure on Coordinator, receive RerouteInfo, retry to backup node
+- [x] 9.5 Implement error response: if backup also fails, send ERROR message back upstream
 - [ ] 9.6 ~~Write integration test: two-node pipeline with Forward message flowing through~~ **SKIPPED - Focus on implementation only**
 
 ## Task 10: Worker Node Lifecycle — Graceful Shutdown
