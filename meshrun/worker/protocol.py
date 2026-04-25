@@ -557,3 +557,45 @@ def write_message(
     # Concatenate header and payload for single write operation
     message_bytes = header_bytes + payload_bytes
     write_all(sock, message_bytes)
+def read_full_message(sock: socket.socket) -> tuple[Header, list[float] | list[int]]:
+    """Read a complete message from *sock*: header → payload → tensor.
+
+    This function implements the full message read flow:
+        1. read_exact(32) → header bytes
+        2. Header.unpack() → header object (validates automatically)
+        3. read_exact(header.payload_size) → tensor bytes
+        4. bytes_to_tensor() → flat list of numeric values
+
+    Args:
+        sock: A socket (or any object with a ``recv(int)`` method).
+
+    Returns:
+        A tuple ``(header, tensor_data)`` where:
+        - ``header`` is a validated :class:`Header` instance.
+        - ``tensor_data`` is a flat list of numeric values (row-major order).
+          For fp16 dtype, values are Python floats; for int8, Python integers.
+
+    Raises:
+        ConnectionError: If the connection is closed before the full message
+            is received.
+        socket.timeout: If a ``recv()`` call times out.
+        ValueError: If the header or payload violates protocol constraints.
+    """
+    # 1. Read exactly 32 bytes for the header
+    header_bytes = read_exact(sock, HEADER_SIZE)
+    
+    # 2. Deserialize and validate the header
+    header = Header.unpack(header_bytes)
+    
+    # 3. Read exactly payload_size bytes for the tensor payload
+    payload_bytes = read_exact(sock, header.payload_size)
+    
+    # 4. Reconstruct the tensor from raw bytes
+    tensor_data = bytes_to_tensor(
+        data=payload_bytes,
+        dtype=header.dtype,
+        dims=header.dims,
+        num_dims=header.num_dims,
+    )
+    
+    return header, tensor_data
