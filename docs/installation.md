@@ -44,7 +44,15 @@ uv pip install -e .
 uv pip install pytest hypothesis pytest-asyncio ruff mypy
 ```
 
-### 6. (Optional) Install PyTorch for GPU Inference
+### 6. Install Security Dependencies
+
+The secure protocol layer (AES-256-GCM encryption) requires the `cryptography` package:
+
+```powershell
+uv pip install cryptography
+```
+
+### 7. (Optional) Install PyTorch for GPU Inference
 
 PyTorch is required for model loading and forward pass execution (Shard Manager, Layer Engine, Resource Monitor GPU polling). The TCP protocol and connection pool work without it.
 
@@ -66,28 +74,35 @@ python -c "import meshrun; print('MeshRun installed successfully')"
 
 ```
 meshrun/
-  app/           # Application entry points (not yet implemented)
-  coordinator/   # Control plane — gRPC registry, scheduling, routing (not yet implemented)
-  worker/        # Data plane — TCP protocol, shard manager, layer engine, etc.
-    protocol.py           # TCP binary protocol (header, framing, tensor serialization)
-    connection_pool.py    # Persistent TCP connection management
-    shard_manager.py      # Safetensors selective download, GPU loading, caching
-    layer_engine.py       # Forward pass execution through transformer layers
-    resource_monitor.py   # GPU memory/utilization tracking, heartbeat snapshots
-    test_protocol.py      # Tests for protocol.py
-  security/      # Security utilities (out of scope for POC)
+  app/               # Application entry points (not yet implemented)
+  coordinator/       # Control plane — gRPC registry, scheduling, routing (not yet implemented)
+  worker/            # Data plane — all worker node components
+    protocol.py              # TCP binary protocol (header, framing, tensor serialization, encryption)
+    connection_pool.py       # Persistent TCP connection management
+    shard_manager.py         # Safetensors selective download, GPU loading, caching
+    layer_engine.py          # Forward pass execution through transformer layers
+    resource_monitor.py      # GPU memory/utilization tracking, heartbeat snapshots
+    layer_registry.py        # Layer assignment storage and pipeline topology queries
+    coordinator_client.py    # gRPC client for Coordinator communication
+    node.py                  # Worker node lifecycle (startup, registration, serving)
+    serving.py               # Serving loop — request processing pipeline
+    test_protocol.py         # Tests for protocol.py
+    test_secure_protocol.py  # Tests for secure protocol (AES-GCM)
+  security/          # Standalone security utilities
+    crypto.py                # AES-256-GCM encryption/decryption helpers
   __init__.py
 ```
 
 ## Dependencies Summary
 
-| Category        | Packages                                  | Required For                             |
-| --------------- | ----------------------------------------- | ---------------------------------------- |
-| Core            | Python stdlib (socket, struct, threading) | TCP protocol, connection pool            |
-| Model Execution | PyTorch                                   | Shard loading, forward pass, GPU metrics |
-| Control Plane   | grpcio, protobuf                          | Coordinator communication (not yet used) |
-| Testing         | pytest, hypothesis                        | Unit and property-based tests            |
-| Dev Tools       | ruff, mypy                                | Linting, type checking                   |
+| Category        | Packages                                  | Required For                               |
+| --------------- | ----------------------------------------- | ------------------------------------------ |
+| Core            | Python stdlib (socket, struct, threading) | TCP protocol, connection pool              |
+| Security        | cryptography                              | AES-256-GCM encryption for secure protocol |
+| Model Execution | PyTorch                                   | Shard loading, forward pass, GPU metrics   |
+| Control Plane   | grpcio, protobuf                          | Coordinator communication (planned)        |
+| Testing         | pytest, hypothesis                        | Unit and property-based tests              |
+| Dev Tools       | ruff, mypy                                | Linting, type checking                     |
 
 ## Troubleshooting
 
@@ -97,4 +112,6 @@ meshrun/
 
 **Import errors after install**: Make sure the virtual environment is activated (`.venv\Scripts\activate`) before running any Python commands.
 
-**PyTorch import errors in Shard Manager / Layer Engine / Resource Monitor**: These components require PyTorch. Install it per step 6 above. The TCP protocol and connection pool work without PyTorch.
+**PyTorch import errors in Shard Manager / Layer Engine / Resource Monitor**: These components require PyTorch. Install it per step 7 above. The TCP protocol and connection pool work without PyTorch.
+
+**cryptography import errors**: Install via `uv pip install cryptography`. Required for `write_message_secure` / `read_message_secure` and the `meshrun/security/crypto.py` module.
