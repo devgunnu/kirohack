@@ -78,7 +78,7 @@ The Shard Manager uses the safetensors format with HTTP Range requests to select
 > Requirements: 6.1, 6.2
 
 - [x] 7.1 Define registry data structure: node_id, model_id, model_url (HTTP URL to safetensors file), layer_start, layer_end, dtype, is_final_node, downstream_node, upstream_nodes
-- [~] 7.2 Implement assignment storage: set assignment on AcceptLayerAssignment from Coordinator
+- [-] 7.2 Implement assignment storage: set assignment on AcceptLayerAssignment from Coordinator
 - [~] 7.3 Implement query methods for other sub-components to read assignment details (downstream address, layer range, dtype, is_final)
 - [~] 7.4 ~~Write unit tests for assignment storage and query~~ **SKIPPED - Focus on implementation only**
 
