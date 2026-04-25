@@ -413,6 +413,21 @@ class ExecutionPath:
     """Mapping of ``primary_node_id → backup_address`` for rerouting."""
 
 
+@dataclass(frozen=True, slots=True)
+class RerouteInfo:
+    """Backup routing information for a failed node.
+
+    Returned by :func:`handle_failure` and translated to the protobuf
+    ``RerouteInfo`` message by the gRPC servicer.
+    """
+
+    backup_addr: str | None = None
+    """TCP ``host:port`` of the backup node, or ``None`` if no backup available."""
+
+    message: str = ""
+    """Human-readable description of the reroute outcome."""
+
+
 class RouteError(Exception):
     """Raised when a valid execution route cannot be constructed."""
 
@@ -536,6 +551,121 @@ def build_route(
     )
 
     return path
+
+
+# ── Failure Handling ─────────────────────────────────────────────────────────
+
+
+def handle_failure(
+    request_id: str,
+    failed_node_id: str,
+    layer_map: LayerMap,
+    registry: NodeRegistry,
+) -> RerouteInfo:
+    """Look up a backup node for *failed_node_id* and return reroute info.
+
+    Searches the layer map for entries where *failed_node_id* is the
+    primary node.  If a backup node exists for that range and is HEALTHY,
+    returns a :class:`RerouteInfo` with the backup address.  Otherwise
+    returns a ``RerouteInfo`` with ``backup_addr=None``.
+
+    Parameters
+    ----------
+    request_id:
+        Identifier of the inference request that encountered the failure.
+    failed_node_id:
+        The ``node_id`` of the node that failed.
+    layer_map:
+        The :class:`LayerMap` produced by :func:`compute_assignments`.
+    registry:
+        The live :class:`~meshrun.coordinator.registry.NodeRegistry` used
+        to check backup node health.
+
+    Returns
+    -------
+    RerouteInfo
+        Contains the backup node's TCP address if available and healthy,
+        or ``backup_addr=None`` if no viable backup exists.
+    """
+    from meshrun.coordinator.registry import NodeStatus
+
+    entries = layer_map.get_all_entries()
+
+    # Find the layer map entry where the failed node is the primary.
+    failed_entry: LayerMapEntry | None = None
+    for entry in entries:
+        if entry.primary_node_id == failed_node_id:
+            failed_entry = entry
+            break
+
+    if failed_entry is None:
+        logger.warning(
+            "handle_failure: node %s not found as primary in layer map "
+            "(request_id=%s)",
+            failed_node_id,
+            request_id,
+        )
+        return RerouteInfo(
+            backup_addr=None,
+            message=f"Node {failed_node_id} not found in layer map",
+        )
+
+    # Check if a backup exists for this range.
+    if failed_entry.backup_node_id is None or failed_entry.backup_address is None:
+        logger.warning(
+            "handle_failure: no backup assigned for layers %d–%d "
+            "(primary=%s, request_id=%s)",
+            failed_entry.layer_start,
+            failed_entry.layer_end,
+            failed_node_id,
+            request_id,
+        )
+        return RerouteInfo(
+            backup_addr=None,
+            message=(
+                f"No backup node assigned for layers "
+                f"{failed_entry.layer_start}–{failed_entry.layer_end}"
+            ),
+        )
+
+    # Verify the backup node is healthy.
+    backup = registry.get_node(failed_entry.backup_node_id)
+    if backup is None or backup.status != NodeStatus.HEALTHY:
+        status_desc = backup.status.name if backup is not None else "NOT_FOUND"
+        logger.warning(
+            "handle_failure: backup node %s is %s for layers %d–%d "
+            "(request_id=%s)",
+            failed_entry.backup_node_id,
+            status_desc,
+            failed_entry.layer_start,
+            failed_entry.layer_end,
+            request_id,
+        )
+        return RerouteInfo(
+            backup_addr=None,
+            message=(
+                f"Backup node {failed_entry.backup_node_id} is {status_desc} "
+                f"for layers {failed_entry.layer_start}–{failed_entry.layer_end}"
+            ),
+        )
+
+    logger.info(
+        "handle_failure: rerouting layers %d–%d to backup node %s at %s "
+        "(request_id=%s)",
+        failed_entry.layer_start,
+        failed_entry.layer_end,
+        failed_entry.backup_node_id,
+        failed_entry.backup_address,
+        request_id,
+    )
+
+    return RerouteInfo(
+        backup_addr=failed_entry.backup_address,
+        message=(
+            f"Rerouted layers {failed_entry.layer_start}–{failed_entry.layer_end} "
+            f"to backup node {failed_entry.backup_node_id}"
+        ),
+    )
 
 
 # ── Priority Queue ───────────────────────────────────────────────────────────
