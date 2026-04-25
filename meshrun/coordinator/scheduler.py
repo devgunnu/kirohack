@@ -536,3 +536,195 @@ def build_route(
     )
 
     return path
+
+
+# ── Priority Queue ───────────────────────────────────────────────────────────
+
+DEFAULT_ALPHA: float = 0.7
+"""Weight for compute_contributed in the priority scoring function."""
+
+DEFAULT_BETA: float = 0.3
+"""Weight for wait_time (seconds) in the priority scoring function."""
+
+DEFAULT_MAX_DEPTH: int = 100
+"""Maximum number of entries the priority queue will hold."""
+
+
+@dataclass(slots=True)
+class QueueEntry:
+    """A single entry in the inference request priority queue.
+
+    Attributes are mutable so the scheduler can update the computed
+    ``priority`` score at dequeue time without creating new objects.
+    """
+
+    request_id: str
+    """Unique identifier for the inference request."""
+
+    client_id: str
+    """Identifier of the client that submitted the request."""
+
+    model_id: str
+    """Model pipeline the request targets."""
+
+    compute_contributed: float
+    """Opaque measure of how much compute the client has contributed."""
+
+    enqueued_at: float
+    """Monotonic timestamp (``time.monotonic()``) when the entry was enqueued."""
+
+    priority: float = 0.0
+    """Last-computed priority score (higher = more urgent)."""
+
+
+class QueueFullError(Exception):
+    """Raised when the priority queue has reached its maximum depth."""
+
+
+class PriorityQueue:
+    """Priority queue for inference request scheduling.
+
+    Entries are scored at dequeue time using::
+
+        priority = α × compute_contributed + β × wait_time
+
+    where *wait_time* is ``now − enqueued_at`` in seconds.  Re-scoring at
+    dequeue ensures that entries that have been waiting longer naturally
+    rise in priority.
+
+    Parameters
+    ----------
+    max_depth:
+        Maximum number of entries.  :meth:`enqueue` raises
+        :class:`QueueFullError` when the limit is reached.
+    alpha:
+        Weight for ``compute_contributed`` in the scoring function.
+    beta:
+        Weight for ``wait_time`` in the scoring function.
+    """
+
+    __slots__ = ("_entries", "_max_depth", "_alpha", "_beta")
+
+    def __init__(
+        self,
+        max_depth: int = DEFAULT_MAX_DEPTH,
+        alpha: float = DEFAULT_ALPHA,
+        beta: float = DEFAULT_BETA,
+    ) -> None:
+        self._entries: list[QueueEntry] = []
+        self._max_depth = max_depth
+        self._alpha = alpha
+        self._beta = beta
+
+    # ── Public API ───────────────────────────────────────────────────
+
+    def enqueue(
+        self,
+        request_id: str,
+        client_id: str,
+        model_id: str,
+        compute_contributed: float,
+    ) -> QueueEntry:
+        """Add a new inference request to the queue.
+
+        Parameters
+        ----------
+        request_id:
+            Unique request identifier.
+        client_id:
+            Identifier of the submitting client.
+        model_id:
+            Target model pipeline.
+        compute_contributed:
+            Client's compute contribution metric.
+
+        Returns
+        -------
+        QueueEntry
+            The newly created queue entry.
+
+        Raises
+        ------
+        QueueFullError
+            If the queue has reached *max_depth*.
+        """
+        import time
+
+        if len(self._entries) >= self._max_depth:
+            raise QueueFullError(
+                f"Priority queue is full ({self._max_depth} entries); "
+                "request rejected"
+            )
+
+        entry = QueueEntry(
+            request_id=request_id,
+            client_id=client_id,
+            model_id=model_id,
+            compute_contributed=compute_contributed,
+            enqueued_at=time.monotonic(),
+        )
+        self._entries.append(entry)
+
+        logger.debug(
+            "Enqueued request %s from client %s (model=%s, compute=%.2f)",
+            request_id,
+            client_id,
+            model_id,
+            compute_contributed,
+        )
+
+        return entry
+
+    def dequeue(self) -> QueueEntry | None:
+        """Remove and return the highest-priority entry, or ``None`` if empty.
+
+        All entries are re-scored before selection so that accumulated
+        wait time is reflected in the priority.
+        """
+        import time
+
+        if not self._entries:
+            return None
+
+        now = time.monotonic()
+
+        # Re-score every entry
+        for entry in self._entries:
+            wait_time = now - entry.enqueued_at
+            entry.priority = (
+                self._alpha * entry.compute_contributed + self._beta * wait_time
+            )
+
+        # Find the entry with the highest priority
+        best_idx = 0
+        for i in range(1, len(self._entries)):
+            if self._entries[i].priority > self._entries[best_idx].priority:
+                best_idx = i
+
+        best = self._entries.pop(best_idx)
+
+        logger.debug(
+            "Dequeued request %s (priority=%.4f, waited=%.2fs)",
+            best.request_id,
+            best.priority,
+            now - best.enqueued_at,
+        )
+
+        return best
+
+    # ── Introspection ────────────────────────────────────────────────
+
+    def __len__(self) -> int:
+        """Return the number of entries currently in the queue."""
+        return len(self._entries)
+
+    @property
+    def is_full(self) -> bool:
+        """Return ``True`` if the queue has reached its maximum depth."""
+        return len(self._entries) >= self._max_depth
+
+    def __repr__(self) -> str:
+        return (
+            f"PriorityQueue(size={len(self._entries)}, "
+            f"max_depth={self._max_depth})"
+        )
