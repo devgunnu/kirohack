@@ -1,0 +1,4 @@
+cryptography>=41.0.0
+hypothesis
+pytest>=8.0.0
+ctransformers>=0.2.27
