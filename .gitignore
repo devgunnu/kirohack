@@ -47,8 +47,13 @@ logs/
 .*_cache
 *.py[cod]
 
+<<<<<<< HEAD
 # Test / hypothesis artefacts
 .hypothesis/
 
 # Local model weights — never commit large binaries
 meshrun/security/models/
+=======
+.kiro/steering
+.kiro/specs/*/tasks.md
+>>>>>>> 076f2459db68abcc9187957ebd20d7a4d9b34d38
