@@ -1,7 +1,22 @@
 [project]
 name = "distributed-inference-server"
 version = "0.1.0"
-description = "Add your description here"
+description = "Distributed AI inference pipeline for ~3B parameter LLMs"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "grpcio>=1.70.0",
+    "grpcio-tools>=1.70.0",
+    "cryptography>=44.0.0",
+    "torch>=2.6.0",
+    "transformers>=4.48.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "hypothesis>=6.150.0",
+    "pytest-asyncio>=0.25.0",
+    "ruff>=0.15.0",
+    "mypy>=1.15.0",
+]
