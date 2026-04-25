@@ -99,3 +99,123 @@ class LayerAssignment:
     def layer_count(self) -> int:
         """Number of layers in this assignment."""
         return self.layer_end - self.layer_start + 1
+
+
+# ── Registry ────────────────────────────────────────────────────────────────
+
+class LayerAssignmentRegistry:
+    """Thread-safe registry that stores the current layer assignment for a worker node.
+
+    The Coordinator sends an ``AcceptLayerAssignment`` message containing the
+    full assignment details.  The registry stores exactly one assignment at a
+    time — accepting a new assignment replaces any previous one.
+
+    All public methods are safe to call from multiple threads.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._assignment: Optional[LayerAssignment] = None
+
+    # ── Mutators ────────────────────────────────────────────────────────
+
+    def accept_layer_assignment(self, assignment: LayerAssignment) -> None:
+        """Store a new layer assignment received from the Coordinator.
+
+        Parameters
+        ----------
+        assignment:
+            A validated ``LayerAssignment`` instance.  The dataclass
+            ``__post_init__`` ensures all invariants hold before storage.
+
+        Raises
+        ------
+        TypeError
+            If *assignment* is not a ``LayerAssignment``.
+        """
+        if not isinstance(assignment, LayerAssignment):
+            raise TypeError(
+                f"expected LayerAssignment, got {type(assignment).__name__}"
+            )
+        with self._lock:
+            self._assignment = assignment
+
+    def clear(self) -> None:
+        """Remove the current assignment (e.g. on shard unload or shutdown)."""
+        with self._lock:
+            self._assignment = None
+
+    # ── Queries ─────────────────────────────────────────────────────────
+
+    @property
+    def has_assignment(self) -> bool:
+        """Return ``True`` if an assignment is currently stored."""
+        with self._lock:
+            return self._assignment is not None
+
+    @property
+    def assignment(self) -> Optional[LayerAssignment]:
+        """Return the current assignment snapshot, or ``None``."""
+        with self._lock:
+            return self._assignment
+
+    # ── Convenience query methods for sub-components ────────────────────
+
+    def get_downstream_address(self) -> Optional[str]:
+        """Return the downstream node's ``host:port``, or ``None`` if final node or unassigned."""
+        with self._lock:
+            if self._assignment is None:
+                return None
+            return self._assignment.downstream_node
+
+    def get_upstream_addresses(self) -> tuple[str, ...]:
+        """Return upstream node addresses. Empty tuple if unassigned."""
+        with self._lock:
+            if self._assignment is None:
+                return ()
+            return self._assignment.upstream_nodes
+
+    def get_layer_range(self) -> Optional[tuple[int, int]]:
+        """Return ``(layer_start, layer_end)`` inclusive, or ``None`` if unassigned."""
+        with self._lock:
+            if self._assignment is None:
+                return None
+            return (self._assignment.layer_start, self._assignment.layer_end)
+
+    def get_dtype(self) -> Optional[AssignmentDType]:
+        """Return the assigned quantization dtype, or ``None`` if unassigned."""
+        with self._lock:
+            if self._assignment is None:
+                return None
+            return self._assignment.dtype
+
+    def is_final_node(self) -> bool:
+        """Return ``True`` if this node is the final node in the pipeline.
+
+        Returns ``False`` if no assignment is stored.
+        """
+        with self._lock:
+            if self._assignment is None:
+                return False
+            return self._assignment.is_final_node
+
+    def get_model_id(self) -> Optional[str]:
+        """Return the model identifier, or ``None`` if unassigned."""
+        with self._lock:
+            if self._assignment is None:
+                return None
+            return self._assignment.model_id
+
+    def get_model_url(self) -> Optional[str]:
+        """Return the HTTP URL to the safetensors model file, or ``None`` if unassigned."""
+        with self._lock:
+            if self._assignment is None:
+                return None
+            return self._assignment.model_url
+
+    def get_node_id(self) -> Optional[str]:
+        """Return this node's identifier, or ``None`` if unassigned."""
+        with self._lock:
+            if self._assignment is None:
+                return None
+            return self._assignment.node_id
