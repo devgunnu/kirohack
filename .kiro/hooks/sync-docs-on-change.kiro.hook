@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "name": "Sync Docs on Source Change",
+  "description": "When Python source files or project config files are edited, asks the agent to review the changes and update the README.md to keep documentation in sync with the codebase.",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Add all documentation to the docs/ folder in specific dedicated files\nKeep all docs associate with usage, installation and other things fully up to date at al times."
+  },
+  "workspaceFolderName": "Distributed Inference Server",
+  "shortName": "sync-docs-on-change"
+}

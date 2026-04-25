@@ -130,8 +130,11 @@ sequenceDiagram
     Note over CO: Assign layers based on:<br/>1. User-configured memory limit<br/>2. Layer memory footprint<br/>3. Minimize cross-node hops
     CO-->>N: AssignLayers {layer_start: 10, layer_end: 19, dtype: fp16}
     N->>LR: Store assignment (layers 10–19, fp16)
-    N->>SM: LoadShard(model_id, layer_start=10, layer_end=19, dtype=fp16)
-    SM->>SM: Load quantized weights from disk/network
+    N->>SM: LoadShard(model_url, layer_start=10, layer_end=19, dtype=fp16)
+    SM->>SM: Fetch safetensors header via HTTP Range request
+    SM->>SM: Identify tensors for layers 10–19 from header metadata
+    SM->>SM: Download only assigned layer byte ranges (HTTP Range requests)
+    SM->>SM: Cache weights locally, load to GPU
     SM->>RM: Report memory consumed
     RM-->>SM: Ack (within user limit: 2GB used of 6GB limit)
     SM-->>N: ShardReady
@@ -406,19 +409,29 @@ sequenceDiagram
 
 ##### 2a. Shard Manager
 
-**Purpose**: Manages the lifecycle of quantized model shards on the worker node — loading weights from disk or network, validating layer compatibility, and unloading when reassigned.
+**Purpose**: Manages the lifecycle of quantized model shards on the worker node — selectively downloading only the assigned layer weights from a safetensors model file via HTTP Range requests, caching them locally, loading into GPU memory, validating layer compatibility, and unloading when reassigned.
 
-| Operation       | Description                                                                                                                     |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `LoadShard`     | Load quantized weights for assigned layer range. Validates dtype (fp16/int8), allocates GPU memory, and moves tensors to device |
-| `UnloadShard`   | Free GPU memory for current shard. Used during reassignment or shutdown                                                         |
-| `ValidateShard` | Verify loaded shard matches expected layer count, hidden dimensions, and dtype                                                  |
-| `GetShardInfo`  | Return metadata: layers loaded, memory consumed, dtype, model_id                                                                |
+**Weight Download Strategy (Safetensors Selective Download)**:
+The safetensors format stores a JSON header at the start of the file containing every tensor's name, dtype, shape, and exact byte offsets (`data_offsets`). This enables downloading only the specific layer weights a node needs, without fetching the full model file.
+
+1. Fetch safetensors header via HTTP Range request (first 8 bytes → header size, then header JSON — typically ~100KB)
+2. Parse tensor metadata to identify tensors belonging to assigned layers (e.g., `model.layers.5.self_attn.q_proj.weight` through `model.layers.9.*`)
+3. Download only those tensor byte ranges using HTTP Range requests (provider-agnostic: works with HuggingFace Hub, S3, GCS, or any HTTP server)
+4. Cache downloaded weights locally to avoid re-downloading on restart
+5. Load cached weights into GPU memory
+
+| Operation       | Description                                                                                                                                                                     |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LoadShard`     | Selectively download assigned layer weights via HTTP Range requests, cache locally, load to GPU. Validates dtype (fp16/int8), allocates GPU memory, and moves tensors to device |
+| `UnloadShard`   | Free GPU memory for current shard. Used during reassignment or shutdown                                                                                                         |
+| `ValidateShard` | Verify loaded shard matches expected layer count, hidden dimensions, and dtype                                                                                                  |
+| `GetShardInfo`  | Return metadata: layers loaded, memory consumed, dtype, model_id, download progress                                                                                             |
 
 **State**:
 - Loaded model layers (ordered list of transformer blocks)
-- Shard metadata (model_id, layer_range, dtype, memory_footprint_mb)
-- Load status (LOADING, READY, ERROR, UNLOADED)
+- Shard metadata (model_id, model_url, layer_range, dtype, memory_footprint_mb)
+- Load status (UNLOADED, DOWNLOADING, LOADING, READY, ERROR)
+- Local cache directory for downloaded weights
 
 ##### 2b. Resource Monitor
 
@@ -449,6 +462,7 @@ sequenceDiagram
 | --------------- | ------------------ | -------------------------------------------------------- |
 | node_id         | string (UUID)      | This node's identifier                                   |
 | model_id        | string             | Model being served                                       |
+| model_url       | string (URL)       | HTTP URL to the safetensors model file                   |
 | layer_start     | uint16             | First assigned layer (inclusive)                         |
 | layer_end       | uint16             | Last assigned layer (inclusive)                          |
 | dtype           | enum (fp16, int8)  | Quantization format for this shard                       |
@@ -808,13 +822,15 @@ The data plane uses a custom binary protocol optimized for minimal overhead. No 
 
 ## Dependencies
 
-| Dependency                                       | Purpose                                                   | Component                 |
-| ------------------------------------------------ | --------------------------------------------------------- | ------------------------- |
-| gRPC framework (e.g., grpcio, tonic)             | Control plane communication between Coordinator and Nodes | Coordinator, Worker Nodes |
-| Protobuf                                         | gRPC service definitions for control plane                | Coordinator, Worker Nodes |
-| PyTorch / ONNX Runtime                           | Model loading, quantization, forward pass execution       | Worker Nodes              |
-| Tokenizer library (e.g., HuggingFace tokenizers) | Tokenization and embedding                                | Client                    |
-| TCP sockets (stdlib)                             | Custom binary protocol for data plane                     | Worker Nodes, Client      |
-| Threading / async runtime                        | Concurrent request handling                               | Worker Nodes              |
-| Priority queue (stdlib)                          | Request scheduling                                        | Coordinator               |
-| UUID generator (stdlib)                          | Node and request identification                           | All components            |
+| Dependency                                       | Purpose                                                   | Component                    |
+| ------------------------------------------------ | --------------------------------------------------------- | ---------------------------- |
+| gRPC framework (e.g., grpcio, tonic)             | Control plane communication between Coordinator and Nodes | Coordinator, Worker Nodes    |
+| Protobuf                                         | gRPC service definitions for control plane                | Coordinator, Worker Nodes    |
+| PyTorch / ONNX Runtime                           | Model loading, quantization, forward pass execution       | Worker Nodes                 |
+| safetensors                                      | Parsing safetensors file headers and tensor metadata      | Worker Nodes (Shard Manager) |
+| requests                                         | HTTP Range requests for selective weight download         | Worker Nodes (Shard Manager) |
+| Tokenizer library (e.g., HuggingFace tokenizers) | Tokenization and embedding                                | Client                       |
+| TCP sockets (stdlib)                             | Custom binary protocol for data plane                     | Worker Nodes, Client         |
+| Threading / async runtime                        | Concurrent request handling                               | Worker Nodes                 |
+| Priority queue (stdlib)                          | Request scheduling                                        | Coordinator                  |
+| UUID generator (stdlib)                          | Node and request identification                           | All components               |
